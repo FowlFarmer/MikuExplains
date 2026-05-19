@@ -85,14 +85,15 @@ final class CaptureStore: @unchecked Sendable {
 
         let files = try fileManager.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )
+        let filenames = Set(files.map(\.lastPathComponent))
 
         return files
             .filter { $0.lastPathComponent.hasSuffix("-summary.md") }
             .compactMap { summaryURL in
-                try? summaryMetadata(from: summaryURL)
+                try? summaryMetadata(from: summaryURL, filenames: filenames)
             }
             .sorted { $0.timestamp > $1.timestamp }
     }
@@ -124,7 +125,7 @@ final class CaptureStore: @unchecked Sendable {
             .appendingPathComponent("Captures", isDirectory: true)
     }
 
-    private func summaryMetadata(from summaryURL: URL) throws -> SummaryRecord {
+    private func summaryMetadata(from summaryURL: URL, filenames: Set<String>) throws -> SummaryRecord {
         let filename = summaryURL.lastPathComponent
         guard filename.hasSuffix("-summary.md") else {
             throw CaptureStoreError.invalidSummaryFilename(filename)
@@ -143,7 +144,7 @@ final class CaptureStore: @unchecked Sendable {
             .deletingLastPathComponent()
             .appendingPathComponent("\(timestamp).md")
 
-        guard fileManager.fileExists(atPath: captureURL.path) else {
+        guard filenames.contains("\(timestamp).md") else {
             throw CaptureStoreError.invalidSummaryFilename(filename)
         }
 

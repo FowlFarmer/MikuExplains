@@ -10,10 +10,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKeyController: HotKeyController?
     private var activeLockToken: SummarizationLockToken?
+    private var cachedSummaries: [SummaryRecord] = []
+    private var hasLoadedSummaryCache = false
+    private var isRefreshingSummaryCache = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
         requestAccessibilityPermission()
+        refreshSummaryCache(updateVisibleHistory: false, debugLine: nil)
 
         hotKeyController = HotKeyController { [weak self] in
             self?.scheduleCollapseSelectedText()
@@ -132,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch result {
             case .success(let summary):
                 NSLog("Denebula saved Codex summary to %@", summary.summaryURL.path)
+                self.cacheSummary(summary)
                 self.overlayController.completeLoading {
                     self.overlayController.showSummary(
                         title: summary.tagline,
@@ -149,17 +154,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showHistory(debugLine: String? = nil) {
-        do {
-            let summaries = try captureStore.listSummaries()
-            overlayController.showHistory(
-                summaries,
-                debug: debugLine,
-                onSelect: { [weak self] summary in
-                    self?.showStoredSummary(summary)
+        let visibleDebugLine = debugLine ?? (hasLoadedSummaryCache ? nil : "Loading summaries...")
+        overlayController.showHistory(
+            cachedSummaries,
+            debug: visibleDebugLine,
+            onSelect: { [weak self] summary in
+                self?.showStoredSummary(summary)
+            }
+        )
+        refreshSummaryCache(updateVisibleHistory: true, debugLine: debugLine)
+    }
+
+    private func refreshSummaryCache(updateVisibleHistory: Bool, debugLine: String?) {
+        guard isRefreshingSummaryCache == false else {
+            return
+        }
+
+        isRefreshingSummaryCache = true
+        Task.detached { [captureStore] in
+            let result = Result {
+                try captureStore.listSummaries()
+            }
+
+            await MainActor.run {
+                self.isRefreshingSummaryCache = false
+
+                switch result {
+                case .success(let summaries):
+                    self.cachedSummaries = summaries
+                    self.hasLoadedSummaryCache = true
+                    if updateVisibleHistory {
+                        self.overlayController.showHistory(
+                            summaries,
+                            debug: debugLine,
+                            onSelect: { [weak self] summary in
+                                self?.showStoredSummary(summary)
+                            }
+                        )
+                    }
+                case .failure(let error):
+                    self.hasLoadedSummaryCache = true
+                    if updateVisibleHistory {
+                        self.overlayController.showMessage("Could not load summaries. \(error.localizedDescription)")
+                    }
                 }
-            )
-        } catch {
-            overlayController.showMessage("Could not load summaries. \(error.localizedDescription)")
+            }
         }
     }
 
@@ -176,6 +215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             overlayController.showMessage("Could not load summary. \(error.localizedDescription)")
         }
+    }
+
+    private func cacheSummary(_ summary: SummaryRecord) {
+        cachedSummaries.removeAll { $0.summaryURL == summary.summaryURL }
+        cachedSummaries.insert(summary, at: 0)
+        cachedSummaries.sort { $0.timestamp > $1.timestamp }
+        hasLoadedSummaryCache = true
     }
 
     private func acquireSummarizationLock() -> Bool {

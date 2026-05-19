@@ -39,7 +39,7 @@
 - History timestamps use a compact format like `May 19, 2:14 AM` so the time fits in the custom-drawn list column.
 - The debug area is controlled by a switch and is off by default. When enabled it logs the full capture pipeline: source, character count, capture path, Codex raw output path, Codex launch, and Codex success/failure.
 - The back arrow opens a history page of verified summaries. The history scanner only lists `*-summary.md` files whose matching pre-summary `[timestamp].md` capture exists.
-- Opening history is optimized to scan filenames only; summary Markdown contents and validity are loaded lazily when a history row is selected.
+- Opening history is optimized with an in-memory cache warmed at launch. Refreshes scan filenames only, verify matching captures with an in-memory filename set, and load summary Markdown contents/validity lazily when a history row is selected.
 - Text views inside the scroll areas are explicitly sized/resizable and refreshed when content changes; do not rely on a default zero-sized `NSTextView` document view.
 - The panel does not auto-hide; it stays open until the user closes it with the `×`, quits the app, or Denebula replaces it with another panel state.
 
