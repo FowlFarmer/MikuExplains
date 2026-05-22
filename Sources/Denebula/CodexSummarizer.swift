@@ -15,13 +15,13 @@ enum CodexSummarizerError: LocalizedError {
         case .launchFailed(let message):
             "Could not launch Codex: \(message)"
         case .failed(let status, let output):
-            "Codex summarization failed with status \(status): \(output)"
+            "Codex inference failed with status \(status): \(output)"
         case .unreadableOutput(let message):
             "Could not read Codex output: \(message)"
         case .invalidOutput(let output):
-            "Codex returned an invalid summary format: \(output)"
+            "Codex returned an invalid result format: \(output)"
         case .saveFailed(let message):
-            "Could not save Codex summary: \(message)"
+            "Could not save Codex result: \(message)"
         }
     }
 }
@@ -38,6 +38,7 @@ final class CodexSummarizer: @unchecked Sendable {
     func summarize(
         record: CaptureRecord,
         onProcessStarted: @escaping @MainActor @Sendable (Int32) -> Void,
+        onWebSearchStarted: @escaping @MainActor @Sendable () -> Void,
         completion: @escaping @MainActor @Sendable (Result<SummaryRecord, CodexSummarizerError>) -> Void
     ) {
         guard let codexURL = codexExecutableURL() else {
@@ -45,59 +46,93 @@ final class CodexSummarizer: @unchecked Sendable {
             return
         }
 
+        runCodex(
+            codexURL: codexURL,
+            record: record,
+            prompt: localInferencePrompt(for: record),
+            usesWebSearch: false,
+            onProcessStarted: onProcessStarted
+        ) { [self, captureStore] result in
+            switch result {
+            case .failure(let error):
+                complete(.failure(error), completion: completion)
+            case .success(let localResult):
+                guard localResult.needsWebSearch else {
+                    save(localResult, record: record, captureStore: captureStore, completion: completion)
+                    return
+                }
+
+                Task { @MainActor in
+                    onWebSearchStarted()
+                }
+
+                runCodex(
+                    codexURL: codexURL,
+                    record: record,
+                    prompt: webInferencePrompt(for: record, localResult: localResult),
+                    usesWebSearch: true,
+                    onProcessStarted: onProcessStarted
+                ) { [self, captureStore] webResult in
+                    switch webResult {
+                    case .success(let finalResult):
+                        save(finalResult, record: record, captureStore: captureStore, completion: completion)
+                    case .failure(let error):
+                        complete(.failure(error), completion: completion)
+                    }
+                }
+            }
+        }
+    }
+
+    private func runCodex(
+        codexURL: URL,
+        record: CaptureRecord,
+        prompt: String,
+        usesWebSearch: Bool,
+        onProcessStarted: @escaping @MainActor @Sendable (Int32) -> Void,
+        completion: @escaping @Sendable (Result<ParsedCodexSummary, CodexSummarizerError>) -> Void
+    ) {
         let process = Process()
         process.executableURL = codexURL
         process.currentDirectoryURL = record.captureURL.deletingLastPathComponent()
-        process.arguments = [
+
+        var arguments = [
             "exec",
             "--skip-git-repo-check",
             "--sandbox",
             "read-only",
             "--output-last-message",
             record.rawSummaryURL.path,
-            """
-            Summarize the Markdown file at this path:
-            \(record.captureURL.path)
-
-            Return exactly this plain-text format using regular ASCII characters:
-            TAGLINE: fewer than five words
-            VALIDITY_APPLICABLE: yes or no
-            VALIDITY:
-            If VALIDITY_APPLICABLE is yes, write a short analysis of whether the factual claims appear truthful, false, misleading, or uncertain. Mention uncertainty when the claim would require current or external verification. If VALIDITY_APPLICABLE is no, write NOT_APPLICABLE.
-            SUMMARY:
-            A complete Markdown summary of all important points.
-
-            The TAGLINE must be 1 to 4 words, contain only letters, numbers, and spaces, and must not include punctuation.
-            The SUMMARY should preserve all important points while being concise and useful.
-            Only set VALIDITY_APPLICABLE to yes when the captured text is making factual, verifiable claims. If the text is fiction, personal preference, instructions, UI copy, brainstorming, code, or otherwise not asserting factual information, set VALIDITY_APPLICABLE to no.
-            """
+            prompt
         ]
+
+        if usesWebSearch {
+            arguments.insert("--search", at: 0)
+        }
+
+        process.arguments = arguments
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
 
-        process.terminationHandler = { [self, captureStore] process in
+        process.terminationHandler = { process in
             let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: outputData, encoding: .utf8) ?? ""
 
             if process.terminationStatus != 0 {
-                self.complete(
-                    .failure(.failed(status: process.terminationStatus, output: output)),
-                    completion: completion
-                )
+                completion(.failure(.failed(status: process.terminationStatus, output: output)))
                 return
             }
 
             do {
                 let rawOutput = try String(contentsOf: record.rawSummaryURL, encoding: .utf8)
-                let parsedSummary = try ParsedCodexSummary.parse(rawOutput)
-                let savedSummary = try captureStore.saveSummary(parsedSummary, for: record)
-                self.complete(.success(savedSummary), completion: completion)
+                let parsedResult = try ParsedCodexSummary.parse(rawOutput)
+                completion(.success(parsedResult))
             } catch let error as CodexSummarizerError {
-                self.complete(.failure(error), completion: completion)
+                completion(.failure(error))
             } catch {
-                self.complete(.failure(.saveFailed(error.localizedDescription)), completion: completion)
+                completion(.failure(.unreadableOutput(error.localizedDescription)))
             }
         }
 
@@ -107,7 +142,21 @@ final class CodexSummarizer: @unchecked Sendable {
                 onProcessStarted(process.processIdentifier)
             }
         } catch {
-            complete(.failure(.launchFailed(error.localizedDescription)), completion: completion)
+            completion(.failure(.launchFailed(error.localizedDescription)))
+        }
+    }
+
+    private func save(
+        _ result: ParsedCodexSummary,
+        record: CaptureRecord,
+        captureStore: CaptureStore,
+        completion: @escaping @MainActor @Sendable (Result<SummaryRecord, CodexSummarizerError>) -> Void
+    ) {
+        do {
+            let savedResult = try captureStore.saveSummary(result, for: record)
+            complete(.success(savedResult), completion: completion)
+        } catch {
+            complete(.failure(.saveFailed(error.localizedDescription)), completion: completion)
         }
     }
 
@@ -138,90 +187,250 @@ final class CodexSummarizer: @unchecked Sendable {
 
         return nil
     }
+
+    private func localInferencePrompt(for record: CaptureRecord) -> String {
+        let hints = TextInferenceHints(captureURL: record.captureURL).promptText
+        return """
+        Read the Markdown file at this path:
+        \(record.captureURL.path)
+
+        Denebula is a highlight-to-AI-action app. Infer what the user likely wants from the highlighted text, then return the smallest useful set of result cards.
+
+        Local deterministic hints:
+        \(hints)
+
+        Use these v1 intents when appropriate: definition, translation, summary, validity, assumptions, core_point, actions, reply_draft, code_help, web_context.
+
+        Rules:
+        - Return only valid JSON. No Markdown fence.
+        - Always consider English as the user's preferred output language unless the selected text explicitly asks for another language.
+        - If the selected text is not English, treat translation into English as the likely primary intent unless another intent is clearly more useful.
+        - If the selected text is five words or fewer and looks like terminology, prefer a definition card.
+        - Do not force a summary card. Include summary only when it is genuinely useful or when intent confidence is low.
+        - If intent confidence is low, use primary_intent "summary" and include 2 or 3 broadly helpful cards.
+        - Prefer 1 to 3 cards total.
+        - Set needs_web_search true only for factual claims, current events, named entities, citations, or source-backed verification where web context would materially improve the answer.
+        - If needs_web_search is true, still include a useful local result, but avoid pretending to verify facts from memory.
+        - Use regular ASCII characters in tagline, intent, type, title, and confidence.
+
+        JSON shape:
+        {
+          "tagline": "1 to 4 words",
+          "primary_intent": "definition",
+          "intent_confidence": "low|medium|high",
+          "needs_web_search": false,
+          "used_web_search": false,
+          "cards": [
+            {
+              "type": "definition",
+              "title": "Definition",
+              "body": "Card body text.",
+              "confidence": "optional low|medium|high"
+            }
+          ]
+        }
+        """
+    }
+
+    private func webInferencePrompt(for record: CaptureRecord, localResult: ParsedCodexSummary) -> String {
+        let localJSON = (try? localResult.jsonString()) ?? ""
+        return """
+        Read the Markdown file at this path:
+        \(record.captureURL.path)
+
+        Denebula already ran a local inference pass and decided web search is useful. Use live web search for claim verification, citations, or current context, then return the final Denebula result.
+
+        Local pass JSON:
+        \(localJSON)
+
+        Rules:
+        - Return only valid JSON. No Markdown fence.
+        - Preserve the best local cards when useful, but replace weak validity/context cards with web-grounded ones.
+        - Include sources or source names in card bodies when web search informs the answer.
+        - Set needs_web_search false and used_web_search true.
+        - Prefer 1 to 3 cards total.
+        - Use regular ASCII characters in tagline, intent, type, title, and confidence.
+
+        JSON shape:
+        {
+          "tagline": "1 to 4 words",
+          "primary_intent": "validity",
+          "intent_confidence": "low|medium|high",
+          "needs_web_search": false,
+          "used_web_search": true,
+          "cards": [
+            {
+              "type": "validity",
+              "title": "Validity",
+              "body": "Card body text with source context.",
+              "confidence": "optional low|medium|high"
+            }
+          ]
+        }
+        """
+    }
 }
 
-struct ParsedCodexSummary {
+private struct TextInferenceHints {
+    let captureURL: URL
+
+    var promptText: String {
+        guard let text = try? String(contentsOf: captureURL, encoding: .utf8) else {
+            return "- Could not read local text for hints."
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let words = trimmed
+            .split { $0.isWhitespace || $0.isNewline }
+            .map(String.init)
+        let lowercased = trimmed.lowercased()
+        var hints: [String] = [
+            "- Character count: \(trimmed.count)",
+            "- Word count: \(words.count)",
+            "- Contains newline: \(trimmed.contains("\n") ? "yes" : "no")"
+        ]
+
+        if words.count <= 5 {
+            hints.append("- Very short selection: strong hint for definition, jargon unpacking, named entity context, or code syntax.")
+        }
+        if lowercased.contains("todo") || lowercased.contains("action item") || lowercased.contains("follow up") {
+            hints.append("- Looks actionable: consider an actions checklist.")
+        }
+        if lowercased.contains("error") || lowercased.contains("exception") || lowercased.contains("traceback") || lowercased.contains("failed") {
+            hints.append("- Looks like code or an error: consider code_help.")
+        }
+        if lowercased.contains("@") || lowercased.contains("thanks") || lowercased.contains("could you") {
+            hints.append("- May be a message/email: consider reply_draft.")
+        }
+        if trimmed.range(of: #"\d"#, options: .regularExpression) != nil {
+            hints.append("- Contains numbers: consider numerical sanity or validity.")
+        }
+
+        return hints.joined(separator: "\n")
+    }
+}
+
+struct AIResultCard: Codable {
+    let type: String
+    let title: String
+    let body: String
+    let confidence: String?
+}
+
+struct ParsedCodexSummary: Codable {
     let tagline: String
-    let summary: String
-    let validityAnalysis: String?
+    let primaryIntent: String
+    let intentConfidence: String
+    let needsWebSearch: Bool
+    let usedWebSearch: Bool
+    let cards: [AIResultCard]
+
+    enum CodingKeys: String, CodingKey {
+        case tagline
+        case primaryIntent = "primary_intent"
+        case intentConfidence = "intent_confidence"
+        case needsWebSearch = "needs_web_search"
+        case usedWebSearch = "used_web_search"
+        case cards
+    }
 
     static func parse(_ output: String) throws -> ParsedCodexSummary {
-        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lines = trimmedOutput.components(separatedBy: .newlines)
-
-        guard let firstLine = lines.first,
-              firstLine.uppercased().hasPrefix("TAGLINE:") else {
-            throw CodexSummarizerError.invalidOutput(trimmedOutput)
+        let cleanedOutput = extractJSON(from: output)
+        guard let data = cleanedOutput.data(using: .utf8) else {
+            throw CodexSummarizerError.invalidOutput(output)
         }
 
-        let rawTagline = String(firstLine.dropFirst("TAGLINE:".count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let tagline = sanitizeTagline(rawTagline)
+        do {
+            let decoded = try JSONDecoder().decode(ParsedCodexSummary.self, from: data)
+            let sanitizedCards = decoded.cards
+                .map { card in
+                    AIResultCard(
+                        type: sanitizeIdentifier(card.type, fallback: "note"),
+                        title: sanitizeTitle(card.title, fallback: "Note"),
+                        body: card.body.trimmingCharacters(in: .whitespacesAndNewlines),
+                        confidence: card.confidence.map { sanitizeIdentifier($0, fallback: "medium") }
+                    )
+                }
+                .filter { $0.body.isEmpty == false }
 
-        guard let validityApplicableLine = lines.first(where: {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("VALIDITY_APPLICABLE:")
-        }) else {
-            throw CodexSummarizerError.invalidOutput(trimmedOutput)
+            guard sanitizedCards.isEmpty == false else {
+                throw CodexSummarizerError.invalidOutput(output)
+            }
+
+            return ParsedCodexSummary(
+                tagline: sanitizeTagline(decoded.tagline),
+                primaryIntent: sanitizeIdentifier(decoded.primaryIntent, fallback: "summary"),
+                intentConfidence: sanitizeIdentifier(decoded.intentConfidence, fallback: "medium"),
+                needsWebSearch: decoded.needsWebSearch,
+                usedWebSearch: decoded.usedWebSearch,
+                cards: sanitizedCards
+            )
+        } catch let error as CodexSummarizerError {
+            throw error
+        } catch {
+            throw CodexSummarizerError.invalidOutput(cleanedOutput)
+        }
+    }
+
+    func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func extractJSON(from output: String) -> String {
+        var trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmed.hasPrefix("```") {
+            let lines = trimmed.components(separatedBy: .newlines)
+            trimmed = lines
+                .dropFirst()
+                .dropLast(lines.last?.trimmingCharacters(in: .whitespacesAndNewlines) == "```" ? 1 : 0)
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        let validityApplicableValue = String(validityApplicableLine.dropFirst("VALIDITY_APPLICABLE:".count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let shouldShowValidity = validityApplicableValue == "yes"
-
-        guard let validityMarkerIndex = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "VALIDITY:"
-        }) else {
-            throw CodexSummarizerError.invalidOutput(trimmedOutput)
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}") else {
+            return trimmed
         }
 
-        guard let summaryMarkerIndex = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "SUMMARY:"
-        }) else {
-            throw CodexSummarizerError.invalidOutput(trimmedOutput)
-        }
-
-        guard validityMarkerIndex < summaryMarkerIndex else {
-            throw CodexSummarizerError.invalidOutput(trimmedOutput)
-        }
-
-        let rawValidity = lines
-            .dropFirst(validityMarkerIndex + 1)
-            .prefix(summaryMarkerIndex - validityMarkerIndex - 1)
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let summary = lines
-            .dropFirst(summaryMarkerIndex + 1)
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard tagline.isEmpty == false, summary.isEmpty == false else {
-            throw CodexSummarizerError.invalidOutput(trimmedOutput)
-        }
-
-        let validityAnalysis = shouldShowValidity && rawValidity.uppercased() != "NOT_APPLICABLE"
-            ? rawValidity
-            : nil
-
-        return ParsedCodexSummary(
-            tagline: tagline,
-            summary: summary,
-            validityAnalysis: validityAnalysis
-        )
+        return String(trimmed[start...end])
     }
 
     private static func sanitizeTagline(_ tagline: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet.whitespaces)
         let cleaned = tagline.unicodeScalars.map { scalar in
-            allowed.contains(scalar) ? Character(scalar) : " "
+            CharacterSet.alphanumerics.union(.whitespaces).contains(scalar) ? Character(scalar) : " "
         }.reduce(into: "") { result, character in
             result.append(character)
         }
 
-        return cleaned
+        let words = cleaned
             .split(separator: " ")
             .prefix(4)
-            .joined(separator: " ")
+            .map(String.init)
+
+        return words.isEmpty ? "AI Result" : words.joined(separator: " ")
+    }
+
+    private static func sanitizeIdentifier(_ value: String, fallback: String) -> String {
+        let cleaned = value.unicodeScalars.map { scalar in
+            CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_- ")).contains(scalar)
+                ? Character(scalar)
+                : " "
+        }.reduce(into: "") { result, character in
+            result.append(character)
+        }
+        .lowercased()
+        .split(separator: " ")
+        .joined(separator: "_")
+
+        return cleaned.isEmpty ? fallback : cleaned
+    }
+
+    private static func sanitizeTitle(_ value: String, fallback: String) -> String {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? fallback : cleaned
     }
 }

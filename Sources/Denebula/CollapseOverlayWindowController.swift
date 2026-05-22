@@ -42,8 +42,19 @@ final class CollapseOverlayWindowController: NSWindowController {
         contentView.completeLoading(completion: completion)
     }
 
-    func showSummary(title: String, summary: String, validity: String?, debug: String, onBack: @escaping () -> Void) {
-        contentView.showSummary(title: title, summary: summary, validity: validity, debug: debug, onBack: onBack)
+    func showWebSearchLoadingPhase() {
+        contentView.showWebSearchLoadingPhase()
+    }
+
+    func showResult(title: String, intent: String, usedWebSearch: Bool, cards: [AIResultCard], debug: String, onBack: @escaping () -> Void) {
+        contentView.showResult(
+            title: title,
+            intent: intent,
+            usedWebSearch: usedWebSearch,
+            cards: cards,
+            debug: debug,
+            onBack: onBack
+        )
         showPanel()
     }
 
@@ -128,19 +139,16 @@ final class CollapsePanelView: NSView {
     private let statusLabel = NSTextField(labelWithString: "")
     private let debugSwitch = NSSwitch()
     private let closeButton = NSButton(title: "×", target: nil, action: nil)
-    private let summaryTitleLabel = NSTextField(labelWithString: "Summary")
+    private let summaryTitleLabel = NSTextField(labelWithString: "Result")
     private let loadingContainer = NSView()
     private let loadingRingView = LoadingRingView()
     private let loadingPercentLabel = NSTextField(labelWithString: "0%")
     private let loadingCaptionLabel = NSTextField(labelWithString: "Reading")
     private let summaryTextView = NSTextView()
-    private let validityTitleLabel = NSTextField(labelWithString: "Validity")
-    private let validityTextView = NSTextView()
     private let debugTitleLabel = NSTextField(labelWithString: "Debug")
     private let debugTextView = NSTextView()
     private let historyContentView = HistoryListView()
     private lazy var summaryScrollView = makeFlatTextScrollView(for: summaryTextView)
-    private lazy var validityScrollView = makeValidityScrollView(for: validityTextView)
     private lazy var debugScrollView = makeScrollView(for: debugTextView)
     private lazy var historyScrollView = makeHistoryScrollView()
     private var onBack: (() -> Void)?
@@ -170,7 +178,24 @@ final class CollapsePanelView: NSView {
         backButton.isHidden = false
         titleLabel.stringValue = title
         statusLabel.stringValue = ""
+        loadingCaptionLabel.stringValue = "Reading"
+        loadingRingView.tintColor = .white
+        loadingPercentLabel.textColor = .white
+        loadingCaptionLabel.textColor = NSColor.white.withAlphaComponent(0.5)
         setText(debug, in: debugTextView, scrollView: debugScrollView)
+        showLoadingPage()
+        startLoadingAnimation()
+        blackHoleView.pulse()
+    }
+
+    func showWebSearchLoadingPhase() {
+        titleLabel.stringValue = "Verifying"
+        statusLabel.stringValue = "web"
+        statusLabel.textColor = NSColor.systemGreen.withAlphaComponent(0.75)
+        loadingCaptionLabel.stringValue = "Searching web"
+        loadingRingView.tintColor = NSColor.systemGreen
+        loadingPercentLabel.textColor = NSColor.systemGreen
+        loadingCaptionLabel.textColor = NSColor.systemGreen.withAlphaComponent(0.75)
         showLoadingPage()
         startLoadingAnimation()
         blackHoleView.pulse()
@@ -201,17 +226,17 @@ final class CollapsePanelView: NSView {
         }
     }
 
-    func showSummary(title: String, summary: String, validity: String?, debug: String, onBack: @escaping () -> Void) {
+    func showResult(title: String, intent: String, usedWebSearch: Bool, cards: [AIResultCard], debug: String, onBack: @escaping () -> Void) {
         stopLoadingAnimation()
         self.onBack = onBack
         backButton.isHidden = false
-        titleLabel.stringValue = title.isEmpty ? "Summary" : title
-        statusLabel.stringValue = ""
-        summaryTitleLabel.stringValue = "Summary"
-        setText(summary, in: summaryTextView, scrollView: summaryScrollView)
-        setText(validity ?? "", in: validityTextView, scrollView: validityScrollView)
+        titleLabel.stringValue = title.isEmpty ? "Result" : title
+        statusLabel.stringValue = usedWebSearch ? "web" : formattedIntent(intent)
+        statusLabel.textColor = NSColor.white.withAlphaComponent(0.44)
+        summaryTitleLabel.stringValue = "Result"
+        setText(resultText(for: cards), in: summaryTextView, scrollView: summaryScrollView)
         setText(debug, in: debugTextView, scrollView: debugScrollView)
-        showSummaryPage(hasValidity: validity?.isEmpty == false)
+        showSummaryPage()
         blackHoleView.pulse()
     }
 
@@ -219,7 +244,7 @@ final class CollapsePanelView: NSView {
         onBack = nil
         onSelectHistoryItem = onSelect
         backButton.isHidden = true
-        titleLabel.stringValue = "Past Summaries"
+        titleLabel.stringValue = "Past Results"
         statusLabel.stringValue = "\(summaries.count) saved"
         statusLabel.textColor = NSColor.white.withAlphaComponent(0.44)
         setText(debug ?? "History loaded from Application Support.", in: debugTextView, scrollView: debugScrollView)
@@ -237,10 +262,9 @@ final class CollapsePanelView: NSView {
         statusLabel.textColor = NSColor.white.withAlphaComponent(0.44)
         summaryTitleLabel.stringValue = "Message"
         setText(message, in: summaryTextView, scrollView: summaryScrollView)
-        setText("", in: validityTextView, scrollView: validityScrollView)
         setText("", in: debugTextView, scrollView: debugScrollView)
         stopLoadingAnimation()
-        showSummaryPage(hasValidity: false)
+        showSummaryPage()
         blackHoleView.pulse()
     }
 
@@ -270,7 +294,7 @@ final class CollapsePanelView: NSView {
         backButton.bezelStyle = .inline
         backButton.font = .systemFont(ofSize: 12, weight: .medium)
         backButton.contentTintColor = NSColor.white.withAlphaComponent(0.7)
-        backButton.toolTip = "Show past summaries"
+        backButton.toolTip = "Show past results"
         backButton.setContentHuggingPriority(.required, for: .horizontal)
 
         blackHoleView.translatesAutoresizingMaskIntoConstraints = false
@@ -300,9 +324,6 @@ final class CollapsePanelView: NSView {
             label.font = .systemFont(ofSize: 11, weight: .semibold)
             label.textColor = NSColor.white.withAlphaComponent(0.42)
         }
-
-        validityTitleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        validityTitleLabel.textColor = NSColor.white.withAlphaComponent(0.42)
 
         loadingContainer.translatesAutoresizingMaskIntoConstraints = false
         loadingRingView.translatesAutoresizingMaskIntoConstraints = false
@@ -337,7 +358,7 @@ final class CollapsePanelView: NSView {
     }
 
     private func configureTextViews() {
-        [summaryTextView, validityTextView, debugTextView].forEach { textView in
+        [summaryTextView, debugTextView].forEach { textView in
             textView.frame = NSRect(x: 0, y: 0, width: Self.documentWidth, height: 120)
             textView.autoresizingMask = [.width]
             textView.isEditable = false
@@ -365,8 +386,6 @@ final class CollapsePanelView: NSView {
 
         debugTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         debugTextView.textColor = NSColor.white.withAlphaComponent(0.62)
-        validityTextView.font = .systemFont(ofSize: 12.5, weight: .regular)
-        validityTextView.textColor = NSColor.white.withAlphaComponent(0.78)
     }
 
     private func buildLayout() {
@@ -387,8 +406,6 @@ final class CollapsePanelView: NSView {
         rootStack.addArrangedSubview(loadingContainer)
         rootStack.addArrangedSubview(summaryTitleLabel)
         rootStack.addArrangedSubview(summaryScrollView)
-        rootStack.addArrangedSubview(validityTitleLabel)
-        rootStack.addArrangedSubview(validityScrollView)
         rootStack.addArrangedSubview(historyScrollView)
         rootStack.addArrangedSubview(debugTitleLabel)
         rootStack.addArrangedSubview(debugScrollView)
@@ -418,14 +435,13 @@ final class CollapsePanelView: NSView {
             loadingCaptionLabel.centerXAnchor.constraint(equalTo: loadingContainer.centerXAnchor),
             loadingCaptionLabel.topAnchor.constraint(equalTo: loadingRingView.bottomAnchor, constant: 18),
             loadingCaptionLabel.widthAnchor.constraint(equalTo: loadingContainer.widthAnchor),
-            summaryScrollView.heightAnchor.constraint(equalToConstant: 248),
-            validityScrollView.heightAnchor.constraint(equalToConstant: 86),
+            summaryScrollView.heightAnchor.constraint(equalToConstant: 286),
             historyScrollView.heightAnchor.constraint(equalToConstant: 286),
             debugScrollView.heightAnchor.constraint(equalToConstant: 76)
         ])
 
         setDebugVisible(false)
-        showSummaryPage(hasValidity: false)
+        showSummaryPage()
     }
 
     private func startLoadingAnimation() {
@@ -462,18 +478,14 @@ final class CollapsePanelView: NSView {
         loadingContainer.isHidden = false
         summaryTitleLabel.isHidden = true
         summaryScrollView.isHidden = true
-        validityTitleLabel.isHidden = true
-        validityScrollView.isHidden = true
         historyScrollView.isHidden = true
         setDebugVisible(debugSwitch.state == .on)
     }
 
-    private func showSummaryPage(hasValidity: Bool) {
+    private func showSummaryPage() {
         loadingContainer.isHidden = true
         summaryTitleLabel.isHidden = false
         summaryScrollView.isHidden = false
-        validityTitleLabel.isHidden = !hasValidity
-        validityScrollView.isHidden = !hasValidity
         historyScrollView.isHidden = true
         setDebugVisible(debugSwitch.state == .on)
     }
@@ -482,8 +494,6 @@ final class CollapsePanelView: NSView {
         loadingContainer.isHidden = true
         summaryTitleLabel.isHidden = true
         summaryScrollView.isHidden = true
-        validityTitleLabel.isHidden = true
-        validityScrollView.isHidden = true
         historyScrollView.isHidden = false
         setDebugVisible(debugSwitch.state == .on)
     }
@@ -536,10 +546,6 @@ final class CollapsePanelView: NSView {
         return scrollView
     }
 
-    private func makeValidityScrollView(for textView: NSTextView) -> NSScrollView {
-        makeFlatTextScrollView(for: textView)
-    }
-
     private func makeHistoryScrollView() -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.borderType = .noBorder
@@ -587,6 +593,29 @@ final class CollapsePanelView: NSView {
     private func scrollToBottom(_ textView: NSTextView) {
         let endRange = NSRange(location: textView.string.count, length: 0)
         textView.scrollRangeToVisible(endRange)
+    }
+
+    private func resultText(for cards: [AIResultCard]) -> String {
+        guard cards.isEmpty == false else {
+            return "No result cards returned."
+        }
+
+        return cards.map { card in
+            var lines = [card.title.uppercased(), card.body]
+            if let confidence = card.confidence, confidence.isEmpty == false {
+                lines.append("Confidence: \(confidence)")
+            }
+            return lines.joined(separator: "\n")
+        }
+        .joined(separator: "\n\n")
+    }
+
+    private func formattedIntent(_ intent: String) -> String {
+        intent
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .prefix(2)
+            .joined(separator: " ")
     }
 
     @objc private func backButtonPressed() {
@@ -677,7 +706,7 @@ private final class HistoryListView: NSView {
             .font: NSFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: NSColor.white.withAlphaComponent(0.5)
         ]
-        "No summaries yet.".draw(
+        "No results yet.".draw(
             in: NSRect(x: 0, y: 0, width: bounds.width, height: 24),
             withAttributes: attributes
         )
@@ -707,6 +736,11 @@ private final class HistoryListView: NSView {
 
 final class LoadingRingView: NSView {
     var progress: Double = 0 {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    var tintColor: NSColor = .white {
         didSet {
             needsDisplay = true
         }
@@ -749,7 +783,7 @@ final class LoadingRingView: NSView {
             endAngle: endAngle,
             clockwise: true
         )
-        NSColor.white.withAlphaComponent(0.88).setStroke()
+        tintColor.withAlphaComponent(0.88).setStroke()
         progressPath.lineWidth = 3
         progressPath.lineCapStyle = .round
         progressPath.stroke()

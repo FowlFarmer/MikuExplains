@@ -2,14 +2,14 @@ import Foundation
 
 enum CaptureStoreError: LocalizedError {
     case applicationSupportUnavailable
-    case invalidSummaryFilename(String)
+    case invalidResultFilename(String)
 
     var errorDescription: String? {
         switch self {
         case .applicationSupportUnavailable:
             "Could not locate Application Support."
-        case .invalidSummaryFilename(let filename):
-            "Invalid summary filename: \(filename)"
+        case .invalidResultFilename(let filename):
+            "Invalid result filename: \(filename)"
         }
     }
 }
@@ -58,22 +58,26 @@ final class CaptureStore: @unchecked Sendable {
 
     func saveSummary(_ parsedSummary: ParsedCodexSummary, for record: CaptureRecord) throws -> SummaryRecord {
         let taglineSlug = slug(for: parsedSummary.tagline)
-        let summaryURL = record.captureURL
+        let resultURL = record.captureURL
             .deletingLastPathComponent()
-            .appendingPathComponent("\(record.captureBaseName)-\(taglineSlug)-summary.md")
+            .appendingPathComponent("\(record.captureBaseName)-\(taglineSlug)-result.json")
 
-        let summaryMarkdown = summaryMarkdown(for: parsedSummary)
-        try summaryMarkdown.write(to: summaryURL, atomically: true, encoding: .utf8)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let resultData = try encoder.encode(parsedSummary)
+        try resultData.write(to: resultURL, options: .atomic)
         try? fileManager.removeItem(at: record.rawSummaryURL)
 
         return SummaryRecord(
             timestamp: record.captureBaseName,
             displayTimestamp: displayTimestamp(for: record.captureBaseName),
             tagline: parsedSummary.tagline,
-            summary: parsedSummary.summary,
-            validityAnalysis: parsedSummary.validityAnalysis,
+            primaryIntent: parsedSummary.primaryIntent,
+            intentConfidence: parsedSummary.intentConfidence,
+            usedWebSearch: parsedSummary.usedWebSearch,
+            cards: parsedSummary.cards,
             captureURL: record.captureURL,
-            summaryURL: summaryURL
+            summaryURL: resultURL
         )
     }
 
@@ -91,7 +95,7 @@ final class CaptureStore: @unchecked Sendable {
         let filenames = Set(files.map(\.lastPathComponent))
 
         return files
-            .filter { $0.lastPathComponent.hasSuffix("-summary.md") }
+            .filter { $0.lastPathComponent.hasSuffix("-result.json") || $0.lastPathComponent.hasSuffix("-summary.md") }
             .compactMap { summaryURL in
                 try? summaryMetadata(from: summaryURL, filenames: filenames)
             }
@@ -99,14 +103,32 @@ final class CaptureStore: @unchecked Sendable {
     }
 
     func loadSummary(_ record: SummaryRecord) throws -> SummaryRecord {
+        if record.summaryURL.lastPathComponent.hasSuffix("-result.json") {
+            let data = try Data(contentsOf: record.summaryURL)
+            let parsedResult = try JSONDecoder().decode(ParsedCodexSummary.self, from: data)
+            return SummaryRecord(
+                timestamp: record.timestamp,
+                displayTimestamp: record.displayTimestamp,
+                tagline: parsedResult.tagline,
+                primaryIntent: parsedResult.primaryIntent,
+                intentConfidence: parsedResult.intentConfidence,
+                usedWebSearch: parsedResult.usedWebSearch,
+                cards: parsedResult.cards,
+                captureURL: record.captureURL,
+                summaryURL: record.summaryURL
+            )
+        }
+
         let summaryMarkdown = try String(contentsOf: record.summaryURL, encoding: .utf8)
-        let splitSummary = splitValidity(from: summaryMarkdown)
+        let cards = cardsFromLegacySummaryMarkdown(summaryMarkdown)
         return SummaryRecord(
             timestamp: record.timestamp,
             displayTimestamp: record.displayTimestamp,
             tagline: record.tagline,
-            summary: splitSummary.summary,
-            validityAnalysis: splitSummary.validityAnalysis,
+            primaryIntent: "summary",
+            intentConfidence: "legacy",
+            usedWebSearch: false,
+            cards: cards,
             captureURL: record.captureURL,
             summaryURL: record.summaryURL
         )
@@ -127,14 +149,16 @@ final class CaptureStore: @unchecked Sendable {
 
     private func summaryMetadata(from summaryURL: URL, filenames: Set<String>) throws -> SummaryRecord {
         let filename = summaryURL.lastPathComponent
-        guard filename.hasSuffix("-summary.md") else {
-            throw CaptureStoreError.invalidSummaryFilename(filename)
+        guard filename.hasSuffix("-result.json") || filename.hasSuffix("-summary.md") else {
+            throw CaptureStoreError.invalidResultFilename(filename)
         }
 
-        let stem = String(filename.dropLast("-summary.md".count))
+        let isJSONResult = filename.hasSuffix("-result.json")
+        let suffix = isJSONResult ? "-result.json" : "-summary.md"
+        let stem = String(filename.dropLast(suffix.count))
         let timestampPattern = #"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?"#
         guard let timestampRange = stem.range(of: timestampPattern, options: .regularExpression) else {
-            throw CaptureStoreError.invalidSummaryFilename(filename)
+            throw CaptureStoreError.invalidResultFilename(filename)
         }
 
         let timestamp = String(stem[timestampRange])
@@ -145,15 +169,17 @@ final class CaptureStore: @unchecked Sendable {
             .appendingPathComponent("\(timestamp).md")
 
         guard filenames.contains("\(timestamp).md") else {
-            throw CaptureStoreError.invalidSummaryFilename(filename)
+            throw CaptureStoreError.invalidResultFilename(filename)
         }
 
         return SummaryRecord(
             timestamp: timestamp,
             displayTimestamp: displayTimestamp(for: timestamp),
             tagline: displayTagline(from: String(taglineSlug)),
-            summary: "",
-            validityAnalysis: nil,
+            primaryIntent: isJSONResult ? "result" : "summary",
+            intentConfidence: isJSONResult ? "unknown" : "legacy",
+            usedWebSearch: false,
+            cards: [],
             captureURL: captureURL,
             summaryURL: summaryURL
         )
@@ -175,21 +201,6 @@ final class CaptureStore: @unchecked Sendable {
         return words.isEmpty ? "summary" : words.joined(separator: "-")
     }
 
-    private func summaryMarkdown(for parsedSummary: ParsedCodexSummary) -> String {
-        guard let validityAnalysis = parsedSummary.validityAnalysis,
-              validityAnalysis.isEmpty == false else {
-            return parsedSummary.summary
-        }
-
-        return """
-        \(parsedSummary.summary)
-
-        ## Validity
-
-        \(validityAnalysis)
-        """
-    }
-
     private func displayTagline(from slug: String) -> String {
         slug
             .split(separator: "-")
@@ -206,6 +217,31 @@ final class CaptureStore: @unchecked Sendable {
         let summary = markdown[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
         let validity = markdown[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         return (String(summary), validity.isEmpty ? nil : String(validity))
+    }
+
+    private func cardsFromLegacySummaryMarkdown(_ markdown: String) -> [AIResultCard] {
+        let splitSummary = splitValidity(from: markdown)
+        var cards = [
+            AIResultCard(
+                type: "summary",
+                title: "Summary",
+                body: splitSummary.summary,
+                confidence: nil
+            )
+        ]
+
+        if let validityAnalysis = splitSummary.validityAnalysis {
+            cards.append(
+                AIResultCard(
+                    type: "validity",
+                    title: "Validity",
+                    body: validityAnalysis,
+                    confidence: nil
+                )
+            )
+        }
+
+        return cards
     }
 
     private func displayTimestamp(for timestamp: String) -> String {
@@ -228,8 +264,10 @@ struct SummaryRecord {
     let timestamp: String
     let displayTimestamp: String
     let tagline: String
-    let summary: String
-    let validityAnalysis: String?
+    let primaryIntent: String
+    let intentConfidence: String
+    let usedWebSearch: Bool
+    let cards: [AIResultCard]
     let captureURL: URL
     let summaryURL: URL
 }

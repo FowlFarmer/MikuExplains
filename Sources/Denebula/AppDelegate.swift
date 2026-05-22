@@ -104,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .failure(let error):
             NSLog("Denebula capture failed: %@", error.localizedDescription)
             releaseSummarizationLock()
-            showHistory(debugLine: "No copied text found. Showing past summaries. \(error.localizedDescription)")
+            showHistory(debugLine: "No copied text found. Showing past results. \(error.localizedDescription)")
         }
     }
 
@@ -129,32 +129,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onProcessStarted: { [weak self] processIdentifier in
                 self?.markSummarizationLockProcess(processIdentifier)
                 self?.overlayController.appendDebugLine("Codex PID: \(processIdentifier)")
+            },
+            onWebSearchStarted: { [weak self] in
+                self?.overlayController.showWebSearchLoadingPhase()
+                self?.overlayController.appendDebugLine("Entering web search verification phase...")
             }
         ) { result in
             self.releaseSummarizationLock()
 
             switch result {
             case .success(let summary):
-                NSLog("Denebula saved Codex summary to %@", summary.summaryURL.path)
+                NSLog("Denebula saved Codex result to %@", summary.summaryURL.path)
                 self.cacheSummary(summary)
                 self.overlayController.completeLoading {
-                    self.overlayController.showSummary(
+                    self.overlayController.showResult(
                         title: summary.tagline,
-                        summary: summary.summary,
-                        validity: summary.validityAnalysis,
-                        debug: "Codex summary saved: \(summary.summaryURL.path)",
+                        intent: summary.primaryIntent,
+                        usedWebSearch: summary.usedWebSearch,
+                        cards: summary.cards,
+                        debug: "Codex result saved: \(summary.summaryURL.path)",
                         onBack: { [weak self] in self?.showHistory() }
                     )
                 }
             case .failure(let error):
-                NSLog("Denebula Codex summary failed: %@", error.localizedDescription)
-                self.overlayController.appendDebugLine("Codex summary failed: \(error.localizedDescription)")
+                NSLog("Denebula Codex result failed: %@", error.localizedDescription)
+                self.overlayController.appendDebugLine("Codex result failed: \(error.localizedDescription)")
             }
         }
     }
 
     private func showHistory(debugLine: String? = nil) {
-        let visibleDebugLine = debugLine ?? (hasLoadedSummaryCache ? nil : "Loading summaries...")
+        let visibleDebugLine = debugLine ?? (hasLoadedSummaryCache ? nil : "Loading results...")
         overlayController.showHistory(
             cachedSummaries,
             debug: visibleDebugLine,
@@ -195,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .failure(let error):
                     self.hasLoadedSummaryCache = true
                     if updateVisibleHistory {
-                        self.overlayController.showMessage("Could not load summaries. \(error.localizedDescription)")
+                        self.overlayController.showMessage("Could not load results. \(error.localizedDescription)")
                     }
                 }
             }
@@ -205,15 +210,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showStoredSummary(_ summary: SummaryRecord) {
         do {
             let loadedSummary = try captureStore.loadSummary(summary)
-            overlayController.showSummary(
+            overlayController.showResult(
                 title: loadedSummary.tagline,
-                summary: loadedSummary.summary,
-                validity: loadedSummary.validityAnalysis,
-                debug: "Loaded summary: \(loadedSummary.summaryURL.path)",
+                intent: loadedSummary.primaryIntent,
+                usedWebSearch: loadedSummary.usedWebSearch,
+                cards: loadedSummary.cards,
+                debug: "Loaded result: \(loadedSummary.summaryURL.path)",
                 onBack: { [weak self] in self?.showHistory() }
             )
         } catch {
-            overlayController.showMessage("Could not load summary. \(error.localizedDescription)")
+            overlayController.showMessage("Could not load result. \(error.localizedDescription)")
         }
     }
 
