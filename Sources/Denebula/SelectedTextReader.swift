@@ -9,7 +9,7 @@ enum SelectedTextReaderError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionRequired:
-            "Accessibility permission is required so Denebula can copy the current selection. Enable Denebula in System Settings > Privacy & Security > Accessibility."
+            "Accessibility permission is required so Miku Explains can copy the current selection. Enable Miku Explains in System Settings > Privacy & Security > Accessibility."
         case .noSelectedText:
             "No selected text was copied from the frontmost app."
         }

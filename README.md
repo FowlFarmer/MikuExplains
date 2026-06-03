@@ -1,11 +1,13 @@
-# Denebula
+# Miku Explains
 
-Denebula is a macOS menu bar prototype for just-in-time text summarization using temporary clipboard copy/restore.
+Miku Explains is a whimsical macOS menu bar prototype for highlight-to-AI actions using temporary clipboard copy/restore.
 
-The first scaffold proves the core interaction: highlight text in another app, press `Command + Shift + Space`, and Denebula copies the selection, restores your prior clipboard, saves the text, and asks Codex to summarize it:
+The native Swift app owns the menu bar, global shortcut, clipboard capture, persistence, Codex CLI process, and window placement. The visible result panel is a bundled React UI hosted in a transparent `WKWebView`.
+
+Highlight text in another app, press `Command + Shift + Space`, and Miku Explains copies the selection, restores your prior clipboard, saves the text, and asks Codex to infer what kind of help you likely want. The shortcut is configurable from the panel toolbar, and pressing the shortcut while the panel is already open closes the panel instead of starting another capture.
 
 ```text
-capture -> [timestamp].md -> Codex -> [timestamp]-[tagline]-summary.md
+capture -> [timestamp].md -> Codex -> [timestamp]-[tagline]-result.json
 ```
 
 ## Build
@@ -25,10 +27,10 @@ For a more app-like run with a stable macOS app identity:
 ```sh
 chmod +x scripts/package_app.sh
 scripts/package_app.sh
-open dist/Denebula.app
+open "dist/Miku Explains.app"
 ```
 
-On first run, grant Accessibility permission in System Settings when prompted. Denebula uses that permission only to send `Command + C` to the frontmost app. It temporarily copies the selection, reads the copied text, and restores the previous clipboard contents.
+On first run, grant Accessibility permission in System Settings when prompted. Miku Explains uses that permission only to send `Command + C` to the frontmost app. It temporarily copies the selection, reads the copied text, and restores the previous clipboard contents.
 
 Each successful capture is saved as a Markdown file in:
 
@@ -36,20 +38,8 @@ Each successful capture is saved as a Markdown file in:
 ~/Library/Application Support/Denebula/Captures/
 ```
 
-Files are named to the nearest second, for example:
+After saving the capture, Miku Explains runs the local Codex CLI using your Codex app login. Codex returns a short tagline, an inferred intent, and dynamic result items rendered as React cards. If Codex decides web verification is useful, the app enters a green `Verifying` loading phase and runs a second `codex --search exec ...` pass.
 
-```text
-2026-05-19_14-03-27.md
-```
+The packaged app uses `Resources/miku_crop.png` as the rounded-square menu bar icon, `Resources/AppIcon.icns` as the bundle app icon generated from that same crop, `Resources/miku.png` as the React panel sticker, and `Resources/WebUI/` for the bundled panel UI.
 
-After saving the capture, Denebula runs the local Codex CLI using your Codex app login. Codex returns a short tagline and a full summary. Denebula saves the final summary beside the original file:
-
-```text
-2026-05-19_14-03-27-short-tagline-summary.md
-```
-
-If no text is copied, Denebula opens the past summaries list instead of starting a new summary.
-
-When the captured text contains factual, verifiable claims, Codex also adds a short validity analysis to the saved summary. Non-factual text omits the validity section.
-
-If System Settings says Denebula already has Accessibility permission but the app still reports that it does not, remove Denebula from the Accessibility list, quit Denebula, relaunch `dist/Denebula.app`, and add it again. Rebuilt unsigned prototype apps can leave stale macOS privacy entries behind.
+If System Settings says Miku Explains already has Accessibility permission but the app still reports that it does not, remove Miku Explains from the Accessibility list, quit the app, relaunch `dist/Miku Explains.app`, and add it again. Rebuilt unsigned prototype apps can leave stale macOS privacy entries behind.

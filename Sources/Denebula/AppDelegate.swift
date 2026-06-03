@@ -13,16 +13,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cachedSummaries: [SummaryRecord] = []
     private var hasLoadedSummaryCache = false
     private var isRefreshingSummaryCache = false
+    private static let shortcutDefaultsKey = "MikuExplainsShortcut"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
+        configureOverlayCallbacks()
         requestAccessibilityPermission()
         refreshSummaryCache(updateVisibleHistory: false, debugLine: nil)
 
-        hotKeyController = HotKeyController { [weak self] in
-            self?.scheduleCollapseSelectedText()
+        let shortcut = loadShortcut()
+        overlayController.updateShortcutLabel(shortcut.displayName)
+        hotKeyController = HotKeyController(shortcut: shortcut) { [weak self] in
+            self?.handleHotKey()
         }
-        hotKeyController?.register()
+
+        if let registrationResult = hotKeyController?.register(),
+           case .failure(let error) = registrationResult {
+            overlayController.showMessage(error.localizedDescription)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -31,13 +39,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = StatusIconFactory.blackHoleIcon()
+        item.button?.image = StatusIconFactory.mikuIcon()
         item.button?.imagePosition = .imageOnly
-        item.button?.toolTip = "Denebula"
+        item.button?.toolTip = "Miku Explains"
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(
-            title: "Collapse Selection",
+            title: "Explain Selection",
             action: #selector(collapseSelectedTextFromMenu),
             keyEquivalent: ""
         ))
@@ -48,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
-            title: "Quit Denebula",
+            title: "Quit Miku Explains",
             action: #selector(quit),
             keyEquivalent: "q"
         ))
@@ -56,6 +64,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.items.forEach { $0.target = self }
         item.menu = menu
         statusItem = item
+    }
+
+    private func configureOverlayCallbacks() {
+        overlayController.onShortcutSettingsRequested = { [weak self] in
+            self?.showShortcutSettings()
+        }
+        overlayController.onShortcutRecorded = { [weak self] event in
+            self?.recordShortcut(event)
+        }
     }
 
     @objc private func collapseSelectedTextFromMenu() {
@@ -72,6 +89,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func requestAccessibilityPermission() {
         _ = textReader.requestTrustIfNeeded()
+    }
+
+    private func handleHotKey() {
+        if overlayController.isPanelVisible {
+            overlayController.hide()
+            return
+        }
+
+        scheduleCollapseSelectedText()
     }
 
     private func scheduleCollapseSelectedText() {
@@ -221,6 +247,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             overlayController.showMessage("Could not load result. \(error.localizedDescription)")
         }
+    }
+
+    private func showShortcutSettings() {
+        overlayController.showShortcutSettings()
+    }
+
+    private func recordShortcut(_ event: ShortcutKeyboardEvent) {
+        do {
+            let shortcut = try HotKeyShortcut.fromWebKeyboardEvent(event)
+            guard let hotKeyController else {
+                return
+            }
+
+            switch hotKeyController.updateShortcut(shortcut) {
+            case .success:
+                saveShortcut(shortcut)
+                overlayController.updateShortcutLabel(shortcut.displayName)
+                overlayController.showShortcutAccepted(shortcut.displayName)
+            case .failure(let error):
+                overlayController.showShortcutSettings(error: error.localizedDescription)
+            }
+        } catch {
+            overlayController.showShortcutSettings(error: error.localizedDescription)
+        }
+    }
+
+    private func loadShortcut() -> HotKeyShortcut {
+        guard let data = UserDefaults.standard.data(forKey: Self.shortcutDefaultsKey),
+              let shortcut = try? JSONDecoder().decode(HotKeyShortcut.self, from: data) else {
+            return .default
+        }
+
+        return shortcut
+    }
+
+    private func saveShortcut(_ shortcut: HotKeyShortcut) {
+        guard let data = try? JSONEncoder().encode(shortcut) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: Self.shortcutDefaultsKey)
     }
 
     private func cacheSummary(_ summary: SummaryRecord) {

@@ -3,14 +3,19 @@ set -euo pipefail
 
 swift build
 
-APP_ROOT="${APP_ROOT:-dist/Denebula.app}"
+APP_ROOT="${APP_ROOT:-dist/Miku Explains.app}"
 CONTENTS="$APP_ROOT/Contents"
 MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
 
 rm -rf "$APP_ROOT"
-mkdir -p "$MACOS"
+mkdir -p "$MACOS" "$RESOURCES"
 
 cp ".build/debug/Denebula" "$MACOS/Denebula"
+cp "Resources/miku.png" "$RESOURCES/miku.png"
+cp "Resources/miku_crop.png" "$RESOURCES/miku_crop.png"
+cp "Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+cp -R "Resources/WebUI" "$RESOURCES/WebUI"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,9 +25,13 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key>
     <string>Denebula</string>
     <key>CFBundleIdentifier</key>
-    <string>app.denebula.prototype</string>
+    <string>app.miku-explains.prototype</string>
     <key>CFBundleName</key>
-    <string>Denebula</string>
+    <string>Miku Explains</string>
+    <key>CFBundleDisplayName</key>
+    <string>Miku Explains</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
