@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Miku Explains",
+  "version": "0.1.0",
+  "identifier": "com.miku.explains",
+  "build": {
+    "frontendDist": "../Resources/WebUI"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "panel",
+        "title": "Miku Explains",
+        "width": 570,
+        "height": 620,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false
+      }
+    ],
+    "trayIcon": {
+      "id": "miku-tray",
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false,
+      "tooltip": "Miku Explains"
+    },
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

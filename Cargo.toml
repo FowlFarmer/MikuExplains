@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/miku-core", "src-tauri"]
+# miku-core is GUI-free and builds/tests on any platform without webkit/system GUI deps.
+# src-tauri is the desktop shell (needs webkit2gtk on Linux, AppKit/WebKit on macOS).
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

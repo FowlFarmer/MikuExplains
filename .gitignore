@@ -34,6 +34,21 @@ playground.xcworkspace
 .build/
 dist/
 
+# Rust / Cargo (workspace: crates/miku-core, src-tauri)
+/target/
+**/target/
+# Cargo.lock IS committed for the app binary (reproducible builds) — do not ignore it.
+
+# Tauri generated artifacts
+/src-tauri/gen/
+/src-tauri/target/
+
+# Local capture database (created at runtime in the OS data dir, but ignore any
+# stray copy committed from the working dir)
+*.db
+*.db-wal
+*.db-shm
+
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However

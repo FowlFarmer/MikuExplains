@@ -81,7 +81,7 @@
       h("img", {
         key: wiggleToken,
         className: `sticker${wiggleToken > 0 ? " sticker-wiggle" : ""}`,
-        src: "../miku.png",
+        src: "./miku.png",
         alt: ""
       }),
       h(

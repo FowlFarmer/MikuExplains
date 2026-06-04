@@ -1,0 +1,31 @@
+[package]
+name = "miku-explains"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Miku Explains — highlight-to-AI menu bar app (Tauri shell)."
+default-run = "miku-explains"
+
+[lib]
+name = "miku_explains_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+miku-core = { path = "../crates/miku-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-clipboard-manager = "2"
+# Pure-Rust x11rb backend avoids a system libxdo dependency on Linux.
+# macOS/Windows backends are cfg-selected and unaffected.
+enigo = { version = "0.2", default-features = false, features = ["x11rb"] }
+arboard = "3"
+dirs = "5"
+
+[features]
+# Default Tauri custom-protocol for production builds.
+custom-protocol = ["tauri/custom-protocol"]
