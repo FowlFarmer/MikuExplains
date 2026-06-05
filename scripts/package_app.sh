@@ -11,7 +11,7 @@ RESOURCES="$CONTENTS/Resources"
 rm -rf "$APP_ROOT"
 mkdir -p "$MACOS" "$RESOURCES"
 
-cp ".build/debug/Denebula" "$MACOS/Denebula"
+cp ".build/debug/MikuExplains" "$MACOS/MikuExplains"
 cp "Resources/miku.png" "$RESOURCES/miku.png"
 cp "Resources/miku_crop.png" "$RESOURCES/miku_crop.png"
 cp "Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
@@ -23,7 +23,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>Denebula</string>
+    <string>MikuExplains</string>
     <key>CFBundleIdentifier</key>
     <string>app.miku-explains.prototype</string>
     <key>CFBundleName</key>

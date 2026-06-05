@@ -116,7 +116,7 @@ final class SummarizationLock: @unchecked Sendable {
         }
 
         return applicationSupport
-            .appendingPathComponent("Denebula", isDirectory: true)
+            .appendingPathComponent("MikuExplains", isDirectory: true)
             .appendingPathComponent("summarization.lock")
     }
 

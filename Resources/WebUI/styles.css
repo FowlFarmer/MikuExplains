@@ -194,10 +194,10 @@ button {
 
 .shortcut-pill {
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
-  max-width: 132px;
+  max-width: 140px;
   height: 22px;
   min-width: 0;
   overflow: hidden;
@@ -321,6 +321,13 @@ button {
   min-height: 0;
   padding: 0 18px 16px;
   overflow: hidden;
+}
+
+.bottom-back-bar {
+  display: flex;
+  align-items: center;
+  padding: 6px 18px 10px;
+  flex-shrink: 0;
 }
 
 .scroll {
@@ -717,4 +724,183 @@ button {
   line-height: 1.35;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* ── Model pill + dropdown ─────────────────────────────────────── */
+
+.model-pill-wrap {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  z-index: 100;
+}
+
+.model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+  height: 22px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px dashed rgba(169, 149, 255, 0.52);
+  border-radius: 10px 7px 11px 8px / 7px 11px 8px 10px;
+  padding: 0 7px;
+  color: #5040a0;
+  background: rgba(240, 236, 255, 0.54);
+  font-size: 10.5px;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+  transform: rotate(0.28deg);
+}
+
+.model-pill span {
+  color: #8070c0;
+  font-weight: 760;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-pill strong {
+  color: #2a1a6e;
+  font-weight: 950;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-pill.is-open {
+  border-color: rgba(169, 149, 255, 0.82);
+  background: rgba(230, 224, 255, 0.72);
+}
+
+.model-dropdown {
+  position: fixed;
+  z-index: 99999;
+  min-width: 220px;
+  padding: 6px 0;
+  border: 1.5px solid rgba(169, 149, 255, 0.36);
+  border-radius: 14px 10px 13px 11px / 10px 14px 11px 12px;
+  background:
+    radial-gradient(circle at 90% 10%, rgba(169, 149, 255, 0.14), transparent 50%),
+    rgba(247, 244, 255, 0.97);
+  box-shadow:
+    0 8px 28px rgba(80, 50, 160, 0.14),
+    0 2px 6px rgba(14, 43, 49, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 14px;
+  gap: 8px;
+  color: #2a1a6e;
+  font-size: 12px;
+  font-weight: 760;
+  text-align: left;
+  cursor: default;
+}
+
+.model-row:hover {
+  background: rgba(169, 149, 255, 0.12);
+}
+
+.model-row.is-selected {
+  background: rgba(169, 149, 255, 0.18);
+  font-weight: 950;
+}
+
+.model-row:disabled {
+  opacity: 0.8;
+  cursor: not-allowed;
+}
+
+.model-row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-check {
+  color: #6a50d8;
+}
+
+.model-row-speed {
+  flex: 0 0 auto;
+  color: #8070c0;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.model-row-dl {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px dashed rgba(169, 149, 255, 0.56);
+  border-radius: 6px;
+  color: #6a50d8;
+  font-size: 10px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.model-row:hover .model-row-dl {
+  background: rgba(169, 149, 255, 0.18);
+}
+
+.model-row-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 0 0 auto;
+  min-width: 52px;
+}
+
+.model-pull-pct {
+  color: #6a50d8;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.model-pull-bar {
+  width: 52px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(169, 149, 255, 0.22);
+  overflow: hidden;
+}
+
+.model-pull-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a995ff, #6a50d8);
+  transition: width 120ms ease;
+}
+
+.model-row-error {
+  flex: 0 0 auto;
+  color: var(--pink-deep);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.model-no-ollama {
+  padding: 6px 14px 4px;
+  color: #8070c0;
+  font-size: 10.5px;
+  font-weight: 760;
+  font-style: italic;
+  border-bottom: 1px solid rgba(169, 149, 255, 0.18);
+  margin-bottom: 4px;
 }

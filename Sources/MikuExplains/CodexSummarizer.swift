@@ -11,17 +11,22 @@ enum CodexSummarizerError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .codexExecutableNotFound:
-            "Could not find the Codex CLI. Install or open Codex so Denebula can use its login."
+            return "Could not find the Codex CLI. Install or open Codex so Miku Explains can use its login."
         case .launchFailed(let message):
-            "Could not launch Codex: \(message)"
+            return "Could not launch Codex: \(message)"
         case .failed(let status, let output):
-            "Codex inference failed with status \(status): \(output)"
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let snippet = trimmed.isEmpty ? "(no output)" : String(trimmed.prefix(200))
+            if status == 0 {
+                return "Codex error: \(snippet)"
+            }
+            return "Codex exited with status \(status): \(snippet)"
         case .unreadableOutput(let message):
-            "Could not read Codex output: \(message)"
+            return "Could not read Codex output: \(message)"
         case .invalidOutput(let output):
-            "Codex returned an invalid result format: \(output)"
+            return "Codex returned an invalid result format: \(output)"
         case .saveFailed(let message):
-            "Could not save Codex result: \(message)"
+            return "Could not save Codex result: \(message)"
         }
     }
 }
@@ -115,6 +120,7 @@ final class CodexSummarizer: @unchecked Sendable {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        process.standardInput = FileHandle.nullDevice
 
         process.terminationHandler = { process in
             let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -126,7 +132,30 @@ final class CodexSummarizer: @unchecked Sendable {
             }
 
             do {
-                let rawOutput = try String(contentsOf: record.rawSummaryURL, encoding: .utf8)
+                var rawOutput = try String(contentsOf: record.rawSummaryURL, encoding: .utf8)
+
+                // Codex sometimes exits 0 but writes an ERROR line when auth
+                // or network fails. Detect it before attempting JSON parse.
+                let firstLine = rawOutput
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .components(separatedBy: .newlines)
+                    .first ?? ""
+                if firstLine.uppercased().hasPrefix("ERROR") {
+                    let message = firstLine
+                        .replacingOccurrences(of: "^error[: ]*", with: "", options: [.regularExpression, .caseInsensitive])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let friendly = message.isEmpty ? "Codex returned an error." : message
+                    completion(.failure(.failed(status: 0, output: friendly)))
+                    return
+                }
+
+                // Strip any accidental "ERROR …" lines interspersed before the JSON.
+                let cleaned = rawOutput
+                    .components(separatedBy: .newlines)
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("ERROR") }
+                    .joined(separator: "\n")
+                rawOutput = cleaned
+
                 let parsedResult = try ParsedCodexSummary.parse(rawOutput)
                 completion(.success(parsedResult))
             } catch let error as CodexSummarizerError {
@@ -140,6 +169,13 @@ final class CodexSummarizer: @unchecked Sendable {
             try process.run()
             Task { @MainActor in
                 onProcessStarted(process.processIdentifier)
+            }
+            // Hard timeout: kill Codex if it hasn't finished in 90 seconds.
+            // This guards against stdin-read hangs or network stalls.
+            DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 90) {
+                guard process.isRunning else { return }
+                NSLog("CodexSummarizer: hard timeout — killing PID %d", process.processIdentifier)
+                process.terminate()
             }
         } catch {
             completion(.failure(.launchFailed(error.localizedDescription)))

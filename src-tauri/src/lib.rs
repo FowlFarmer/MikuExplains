@@ -441,6 +441,27 @@ fn pretty_shortcut(accel: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// macOS
+// ---------------------------------------------------------------------------
+
+/// On macOS, synthetic keystrokes (Cmd+C for clipboard capture) require
+/// Accessibility permission. This triggers the system prompt on first launch
+/// if the app is not yet trusted.
+#[cfg(target_os = "macos")]
+fn request_accessibility_permission() {
+    // Trigger the macOS Accessibility permission dialog by attempting a
+    // harmless AppleScript UI action. If already trusted, this is a no-op.
+    // The proper AXIsProcessTrustedWithOptions FFI is fragile without the
+    // full objc2 bridge, so we use osascript as a reliable one-liner.
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", "tell application \"System Events\" to get name of first process"])
+        .output();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_accessibility_permission() {}
+
+// ---------------------------------------------------------------------------
 // App bootstrap
 // ---------------------------------------------------------------------------
 
@@ -459,6 +480,9 @@ pub fn run() {
 
     let config = AppConfig::default();
     let shortcut = config.shortcut.clone();
+
+    // Request macOS Accessibility permission (required for synthetic Cmd+C).
+    request_accessibility_permission();
 
     let db_path = miku_core::default_db_path()
         .unwrap_or_else(|| std::path::PathBuf::from("captures.db"));

@@ -42,11 +42,13 @@ pub trait Provider: Send + Sync {
     fn complete(&self, prompt: &str, web_search: bool) -> Result<String, ProviderError>;
 }
 
-/// Selects which provider the app uses. Mirrors the user's three options.
+/// Selects which provider the app uses.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Codex,
     Api,
     Llama,
+    /// Ollama local server (OpenAI-compatible at http://localhost:11434).
+    Ollama,
 }

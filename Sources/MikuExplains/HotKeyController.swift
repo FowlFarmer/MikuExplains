@@ -7,9 +7,9 @@ struct HotKeyShortcut: Codable, Equatable {
     let keyName: String
 
     static let `default` = HotKeyShortcut(
-        keyCode: UInt32(kVK_Space),
-        modifiers: UInt32(cmdKey | shiftKey),
-        keyName: "Space"
+        keyCode: UInt32(kVK_ANSI_M),
+        modifiers: UInt32(controlKey | shiftKey),
+        keyName: "M"
     )
 
     var displayName: String {

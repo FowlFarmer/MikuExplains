@@ -9,6 +9,9 @@ final class CollapseOverlayWindowController: NSWindowController {
     private static let panelBottomMargin: CGFloat = 40
     var onShortcutSettingsRequested: (() -> Void)?
     var onShortcutRecorded: ((ShortcutKeyboardEvent) -> Void)?
+    var onSetModel: ((String) -> Void)?
+    var onPullModel: ((String) -> Void)?
+    var onReady: (() -> Void)?
 
     init() {
         let window = CollapsePanelWindow(
@@ -37,6 +40,15 @@ final class CollapseOverlayWindowController: NSWindowController {
         }
         contentView.onRecordShortcut = { [weak self] event in
             self?.onShortcutRecorded?(event)
+        }
+        contentView.onSetModel = { [weak self] model in
+            self?.onSetModel?(model)
+        }
+        contentView.onPullModel = { [weak self] model in
+            self?.onPullModel?(model)
+        }
+        contentView.onReady = { [weak self] in
+            self?.onReady?()
         }
     }
 
@@ -95,6 +107,14 @@ final class CollapseOverlayWindowController: NSWindowController {
 
     func appendDebugLine(_ line: String) {
         contentView.appendDebugLine(line)
+    }
+
+    func sendModels(_ models: [String], selected: String, ollamaAvailable: Bool) {
+        contentView.sendModels(models, selected: selected, ollamaAvailable: ollamaAvailable)
+    }
+
+    func updateModelPull(model: String, progress: Double, done: Bool, error: String?, statusText: String? = nil) {
+        contentView.updateModelPull(model: model, progress: progress, done: done, error: error, statusText: statusText)
     }
 
     var isPanelVisible: Bool {
@@ -178,6 +198,9 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     var onClose: (() -> Void)?
     var onOpenShortcutSettings: (() -> Void)?
     var onRecordShortcut: ((ShortcutKeyboardEvent) -> Void)?
+    var onSetModel: ((String) -> Void)?
+    var onPullModel: ((String) -> Void)?
+    var onReady: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         let contentController = WKUserContentController()
@@ -335,6 +358,23 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         sendState()
     }
 
+    func sendModels(_ models: [String], selected: String, ollamaAvailable: Bool) {
+        state = state.replacing(
+            selectedModel: selected,
+            installedModels: models,
+            ollamaAvailable: ollamaAvailable,
+            modelPull: state.modelPull?.done == false ? state.modelPull : nil
+        )
+        sendState()
+    }
+
+    func updateModelPull(model: String, progress: Double, done: Bool, error: String?, statusText: String? = nil) {
+        state = state.replacing(
+            modelPull: WebPanelModelPull(model: model, progress: progress, done: done, error: error, statusText: statusText)
+        )
+        sendState()
+    }
+
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "mikuPanel",
               let body = message.body as? [String: Any],
@@ -346,6 +386,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         case "ready":
             webViewReady = true
             sendState()
+            onReady?()
         case "close":
             onClose?()
         case "back":
@@ -379,6 +420,12 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
                 return
             }
             onSelectHistoryItem?(record)
+        case "setModel":
+            guard let model = body["model"] as? String else { return }
+            onSetModel?(model)
+        case "pullModel":
+            guard let model = body["model"] as? String else { return }
+            onPullModel?(model)
         default:
             break
         }
@@ -532,6 +579,10 @@ private struct WebPanelState: Encodable {
     let shortcutError: String
     let items: [WebPanelItem]
     let summaries: [WebPanelSummary]
+    let selectedModel: String
+    let installedModels: [String]
+    let ollamaAvailable: Bool
+    let modelPull: WebPanelModelPull?
 
     static let initial = WebPanelState(
         view: "message",
@@ -552,7 +603,11 @@ private struct WebPanelState: Encodable {
                 confidence: nil
             )
         ],
-        summaries: []
+        summaries: [],
+        selectedModel: "codex",
+        installedModels: [],
+        ollamaAvailable: true,
+        modelPull: nil
     )
 
     func replacing(
@@ -567,7 +622,11 @@ private struct WebPanelState: Encodable {
         shortcutLabel: String? = nil,
         shortcutError: String? = nil,
         items: [WebPanelItem]? = nil,
-        summaries: [WebPanelSummary]? = nil
+        summaries: [WebPanelSummary]? = nil,
+        selectedModel: String? = nil,
+        installedModels: [String]? = nil,
+        ollamaAvailable: Bool? = nil,
+        modelPull: WebPanelModelPull?? = nil
     ) -> WebPanelState {
         WebPanelState(
             view: view ?? self.view,
@@ -581,7 +640,11 @@ private struct WebPanelState: Encodable {
             shortcutLabel: shortcutLabel ?? self.shortcutLabel,
             shortcutError: shortcutError ?? self.shortcutError,
             items: items ?? self.items,
-            summaries: summaries ?? self.summaries
+            summaries: summaries ?? self.summaries,
+            selectedModel: selectedModel ?? self.selectedModel,
+            installedModels: installedModels ?? self.installedModels,
+            ollamaAvailable: ollamaAvailable ?? self.ollamaAvailable,
+            modelPull: modelPull ?? self.modelPull
         )
     }
 }
@@ -623,6 +686,14 @@ private struct WebPanelSummary: Encodable {
         intentConfidence = record.intentConfidence
         usedWebSearch = record.usedWebSearch
     }
+}
+
+private struct WebPanelModelPull: Encodable {
+    let model: String
+    let progress: Double
+    let done: Bool
+    let error: String?
+    let statusText: String?
 }
 
 enum StatusIconFactory {

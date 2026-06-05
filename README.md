@@ -4,7 +4,7 @@ Miku Explains is a whimsical macOS menu bar prototype for highlight-to-AI action
 
 The native Swift app owns the menu bar, global shortcut, clipboard capture, persistence, Codex CLI process, and window placement. The visible result panel is a bundled React UI hosted in a transparent `WKWebView`.
 
-Highlight text in another app, press `Command + Shift + Space`, and Miku Explains copies the selection, restores your prior clipboard, saves the text, and asks Codex to infer what kind of help you likely want. The shortcut is configurable from the panel toolbar, and pressing the shortcut while the panel is already open closes the panel instead of starting another capture.
+Highlight text in another app, press `Command + Shift + Space`, and Miku Explains copies the selection, restores your prior clipboard, saves the text, and asks Codex to infer what kind of help you likely want. The shortcut is configurable from the panel toolbar. When the panel is already open, pressing the shortcut closes it if nothing new is selected, or starts a fresh explanation if you highlighted different text.
 
 ```text
 capture -> [timestamp].md -> Codex -> [timestamp]-[tagline]-result.json
@@ -19,7 +19,7 @@ swift build
 ## Run
 
 ```sh
-swift run Denebula
+swift run MikuExplains
 ```
 
 For a more app-like run with a stable macOS app identity:
@@ -35,7 +35,7 @@ On first run, grant Accessibility permission in System Settings when prompted. M
 Each successful capture is saved as a Markdown file in:
 
 ```text
-~/Library/Application Support/Denebula/Captures/
+~/Library/Application Support/MikuExplains/Captures/
 ```
 
 After saving the capture, Miku Explains runs the local Codex CLI using your Codex app login. Codex returns a short tagline, an inferred intent, and dynamic result items rendered as React cards. If Codex decides web verification is useful, the app enters a green `Verifying` loading phase and runs a second `codex --search exec ...` pass.

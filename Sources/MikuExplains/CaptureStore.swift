@@ -143,7 +143,7 @@ final class CaptureStore: @unchecked Sendable {
         }
 
         return applicationSupport
-            .appendingPathComponent("Denebula", isDirectory: true)
+            .appendingPathComponent("MikuExplains", isDirectory: true)
             .appendingPathComponent("Captures", isDirectory: true)
     }
 

@@ -2,19 +2,19 @@
 
 ## Project Direction
 
-- Miku Explains is currently scaffolded as a native macOS menu bar app built with Swift Package Manager. The Swift package/target path still uses `Denebula` internally for now.
+- Miku Explains still includes the legacy native macOS Swift menu bar app built with Swift Package Manager. The Swift package/target/executable path now uses `MikuExplains` internally.
 - The first prototype prioritizes reliable selected-text capture with clipboard copy/restore.
 - Real AI calls now run through the local Codex CLI. When text is found, Miku Explains saves it, asks Codex to infer the user's likely intent, and writes a tagged JSON result made of dynamic UI items.
 
 ## Key Implementation Notes
 
-- Entry point: `Sources/Denebula/main.swift`
-- Menu bar and app lifecycle: `Sources/Denebula/AppDelegate.swift`
-- Global shortcut: `Sources/Denebula/HotKeyController.swift`
-- Selected-text capture: `Sources/Denebula/SelectedTextReader.swift`
-- Capture persistence: `Sources/Denebula/CaptureStore.swift`
-- Codex smart inference: `Sources/Denebula/CodexSummarizer.swift`
-- Top-right result panel native WebKit host: `Sources/Denebula/CollapseOverlayWindowController.swift`
+- Entry point: `Sources/MikuExplains/main.swift`
+- Menu bar and app lifecycle: `Sources/MikuExplains/AppDelegate.swift`
+- Global shortcut: `Sources/MikuExplains/HotKeyController.swift`
+- Selected-text capture: `Sources/MikuExplains/SelectedTextReader.swift`
+- Capture persistence: `Sources/MikuExplains/CaptureStore.swift`
+- Codex smart inference: `Sources/MikuExplains/CodexSummarizer.swift`
+- Top-right result panel native WebKit host: `Sources/MikuExplains/CollapseOverlayWindowController.swift`
 - Bundled React panel UI: `Resources/WebUI/index.html`, `Resources/WebUI/app.js`, `Resources/WebUI/styles.css`
 - Local `.app` packaging helper: `scripts/package_app.sh`
 
@@ -25,13 +25,13 @@
 - The React panel was rebuilt from first principles after the AppKit UI migration. Treat `Resources/WebUI/app.js` and `Resources/WebUI/styles.css` as the source of truth for all visible UI: fixed transparent stage, floating sticker, imperfect paper shell, masthead, state body, hand-drawn item cards, history rows, fake loading meter, and debug drawer.
 - The Miku sticker wiggles when React enters the history list, enters a result/detail view, or receives a loading completion token. The animation is implemented by remounting the sticker with a changing React key and applying the `miku-wiggle` CSS keyframes.
 - The default shortcut is `Command + Shift + Space`, displayed in the React toolbar as `shortcut: ⌘⇧Space`. Clicking that toolbar button opens an in-panel shortcut recorder page; successful captures update the Carbon global hotkey immediately and persist the shortcut in `UserDefaults` under `MikuExplainsShortcut`.
-- Pressing the global shortcut while the panel is already visible closes the panel and does not start a new capture/summarization session. Pressing the menu bar `Explain Selection` item still starts capture directly.
+- Pressing the global shortcut while the panel is already visible first checks the current selected text with the clipboard capture path: if nothing is selected, the panel closes; if the selected text matches the last captured text, the panel closes; if the selected text is different, Miku Explains starts a fresh pipeline for the new selection. Pressing the menu bar `Explain Selection` item still starts capture directly.
 - The app asks macOS for Accessibility permission when it launches.
 - Miku Explains preserves the current pasteboard, clears it to avoid stale captures, sends `Command + C`, reads copied text, restores the pasteboard, and then starts the smart inference flow. If no text is copied, it opens the past results list.
-- Each successful capture is saved as raw Markdown text under `~/Library/Application Support/Denebula/Captures/` using a nearest-second timestamp filename like `yyyy-MM-dd_HH-mm-ss.md`; same-second collisions receive a numeric suffix.
+- Each successful capture is saved as raw Markdown text under `~/Library/Application Support/MikuExplains/Captures/` using a nearest-second timestamp filename like `yyyy-MM-dd_HH-mm-ss.md`; same-second collisions receive a numeric suffix.
 - After capture persistence, Miku Explains invokes the local Codex CLI, relying on the user's Codex app auth, to infer the user's likely intent and return strict JSON with `tagline`, `primary_intent`, confidence, web-search flags, and an `items` array. Each item has `type`, `title`, `body`, and optional `confidence`. The prompt treats English as the preferred output language and treats non-English selected text as a strong translation-to-English intent. If the local pass sets `needs_web_search`, Miku Explains runs a second `codex --search exec ...` pass and saves the final result as `[timestamp]-[tagline]-result.json`. Old JSON using `cards` and old `[timestamp]-[tagline]-summary.md` files remain readable as legacy result records.
-- Summarization is guarded by a global lock: an in-memory token blocks repeated shortcuts in the running app, and `~/Library/Application Support/Denebula/summarization.lock` blocks duplicate queries across relaunches. The lock is created before clipboard capture, updated to the Codex child PID after launch, released on success/failure, and considered stale if the owner process is gone or the lock is older than six hours.
-- Capture is delayed very briefly after the global hotkey so the original `Command + Shift + Space` modifiers are released before Denebula sends `Command + C`.
+- Summarization is guarded by a global lock: an in-memory token blocks repeated shortcuts in the running app, and `~/Library/Application Support/MikuExplains/summarization.lock` blocks duplicate queries across relaunches. The lock is created before clipboard capture, updated to the Codex child PID after launch, released on success/failure, and considered stale if the owner process is gone or the lock is older than six hours.
+- Capture is delayed very briefly after the global hotkey so the original `Command + Shift + Space` modifiers are released before Miku Explains sends `Command + C`.
 - Results appear in a fixed-size top-right whimsical pastel React panel hosted inside a transparent `WKWebView`, instead of a full-screen overlay or hand-built AppKit controls. The panel currently uses a 570x620 transparent borderless window with a 40px right margin and smaller 14px top margin; the visible card is inset within that window to leave room for the sticker overhang.
 - The `WKWebView` transparency is part of the UI contract: `drawsBackground` must be false, the web view/layers must be non-opaque, and WebKit child views are cleared after navigation finishes. If this regresses, the symptom is a white rectangular window behind the React panel.
 - Avoid broad external colored shadows on the shell or sticker because they clip against the transparent WebKit window bounds and create abrupt color cutoffs. Keep pink/teal washes inside the shell or use tight, non-bleeding shadows.
@@ -50,7 +50,7 @@
 - The back arrow opens a history page of verified results. The history scanner lists new `*-result.json` files and legacy `*-summary.md` files whose matching pre-result `[timestamp].md` capture exists.
 - Opening history is optimized with an in-memory cache warmed at launch. Refreshes scan filenames only, verify matching captures with an in-memory filename set, and load result JSON or legacy summary Markdown lazily when a history row is selected.
 - Avoid rebuilding panel visuals in AppKit; the Swift panel should remain a `WKWebView` state bridge unless native OS behavior is required.
-- The panel does not auto-hide; it stays open until the user closes it with the `×`, quits the app, or Denebula replaces it with another panel state.
+- The panel does not auto-hide; it stays open until the user closes it with the `×`, quits the app, or Miku Explains replaces it with another panel state.
 
 ## Known Limits
 

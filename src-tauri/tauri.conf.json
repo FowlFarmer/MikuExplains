@@ -8,6 +8,7 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "panel",
@@ -23,12 +24,6 @@
         "shadow": false
       }
     ],
-    "trayIcon": {
-      "id": "miku-tray",
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": false,
-      "tooltip": "Miku Explains"
-    },
     "security": {
       "csp": null
     }

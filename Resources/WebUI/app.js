@@ -17,10 +17,14 @@
     loadingCompleteToken: 0,
     debug: "",
     debugVisible: false,
-    shortcutLabel: "⌘⇧Space",
+    shortcutLabel: "⌃⇧M",
     shortcutError: "",
     items: [EMPTY_ITEM],
-    summaries: []
+    summaries: [],
+    selectedModel: "codex",
+    installedModels: [],
+    ollamaAvailable: true,
+    modelPull: null
   };
   let updateState = null;
   let pendingState = null;
@@ -35,8 +39,160 @@
     }
   };
 
-  function send(type, payload) {
-    const handler = window.webkit &&
+  // ---------------------------------------------------------------------------
+  // Preset model catalogue
+  // ---------------------------------------------------------------------------
+  const PRESET_MODELS = [
+    { id: "codex",        label: "Codex CLI",   tag: null,            size: null,     speed: null },
+    { id: "qwen2.5:3b",   label: "Qwen 2.5 3B", tag: "qwen2.5:3b",   size: "2 GB",   speed: "~90 t/s" },
+    { id: "qwen3:4b",     label: "Qwen 3 4B",   tag: "qwen3:4b",     size: "2.5 GB", speed: "~75 t/s" },
+    { id: "llama3.2:3b",  label: "Llama 3.2 3B",tag: "llama3.2:3b",  size: "2 GB",   speed: "~90 t/s" },
+    { id: "gemma3:4b",    label: "Gemma 3 4B",  tag: "gemma3:4b",    size: "3 GB",   speed: "~65 t/s" },
+    { id: "mistral:7b",   label: "Mistral 7B",  tag: "mistral:7b",   size: "4.5 GB", speed: "~50 t/s" },
+  ];
+
+  function modelShortLabel(modelId) {
+    const found = PRESET_MODELS.find((m) => m.id === modelId);
+    if (found) return found.label;
+    // For unknown installed models, truncate tag
+    return modelId.length > 14 ? modelId.slice(0, 12) + "…" : modelId;
+  }
+
+  function ModelPill({ state }) {
+    const [open, setOpen] = React.useState(false);
+    const btnRef = React.useRef(null);
+    const [dropRect, setDropRect] = React.useState(null);
+
+    React.useEffect(() => {
+      if (!open) return;
+      function onOutside(e) {
+        if (!e.target.closest(".model-dropdown") && !e.target.closest(".model-pill")) {
+          setOpen(false);
+        }
+      }
+      document.addEventListener("mousedown", onOutside);
+      return () => document.removeEventListener("mousedown", onOutside);
+    }, [open]);
+
+    function handleToggle() {
+      if (!open && btnRef.current) {
+        setDropRect(btnRef.current.getBoundingClientRect());
+      }
+      setOpen((o) => !o);
+    }
+
+    const pull = state.modelPull;
+    const installed = new Set(state.installedModels || []);
+
+    // Normalise Ollama tag names — Ollama appends ":latest" to bare names.
+    function isInstalled(tag) {
+      if (!tag) return false;
+      if (installed.has(tag)) return true;
+      const withLatest = tag.includes(":") ? tag : tag + ":latest";
+      return installed.has(withLatest);
+    }
+
+    function handleSelectOrPull(preset) {
+      if (preset.id === "codex") {
+        send("setModel", { model: "codex" });
+        setOpen(false);
+        return;
+      }
+      if (isInstalled(preset.tag)) {
+        send("setModel", { model: preset.id });
+        setOpen(false);
+      } else {
+        send("pullModel", { model: preset.id });
+        // keep open so user can see progress
+      }
+    }
+
+    const rows = PRESET_MODELS.map((preset) => {
+      const isSelected = state.selectedModel === preset.id;
+      const isPulling = pull && !pull.done && pull.model === preset.id;
+      const isInstd = preset.tag === null || isInstalled(preset.tag);
+      const pullFailed = pull && pull.done && pull.error && pull.model === preset.id;
+
+      return h(
+        "button",
+        {
+          key: preset.id,
+          type: "button",
+          className: `model-row${isSelected ? " is-selected" : ""}${isPulling ? " is-pulling" : ""}`,
+          onClick: () => handleSelectOrPull(preset),
+          disabled: isPulling
+        },
+        h(
+          "span",
+          { className: "model-row-label" },
+          isSelected ? h("span", { className: "model-check" }, "✓ ") : null,
+          preset.label
+        ),
+        isPulling
+          ? h(
+              "span",
+              { className: "model-row-right" },
+              h("span", { className: "model-pull-pct" }, pull.statusText || `${Math.round((pull.progress || 0) * 100)}%`),
+              h("div", { className: "model-pull-bar" },
+                h("div", { className: "model-pull-fill", style: { width: `${(pull.progress || 0) * 100}%` } })
+              )
+            )
+          : pullFailed
+          ? h("span", { className: "model-row-error" }, "failed")
+          : isInstd
+          ? h("span", { className: "model-row-speed" }, preset.speed || "")
+          : h(
+              "span",
+              { className: "model-row-dl" },
+              `↓ ${preset.size || ""}`
+            )
+      );
+    });
+
+    // Portal: render the dropdown directly on document.body so it escapes
+    // every stacking context (transforms, filters on shell/sticker/cards).
+    const dropdown = open && dropRect
+      ? ReactDOM.createPortal(
+          h(
+            "div",
+            {
+              className: "model-dropdown",
+              style: {
+                position: "fixed",
+                top: dropRect.bottom + 5,
+                right: window.innerWidth - dropRect.right,
+                zIndex: 99999
+              }
+            },
+            state.ollamaAvailable === false
+              ? h("div", { className: "model-no-ollama" }, "Install Ollama to use local models")
+              : null,
+            rows
+          ),
+          document.body
+        )
+      : null;
+
+    return h(
+      "div",
+      { className: "model-pill-wrap" },
+      h(
+        "button",
+        {
+          ref: btnRef,
+          type: "button",
+          className: `model-pill${open ? " is-open" : ""}`,
+          title: "Change model",
+          onClick: handleToggle
+        },
+        h("span", null, "model:"),
+        h("strong", null, modelShortLabel(state.selectedModel || "codex"))
+      ),
+      dropdown
+    );
+  }
+
+  function send(type, payload) {    const handler = window.webkit &&
       window.webkit.messageHandlers &&
       window.webkit.messageHandlers.mikuPanel;
 
@@ -93,19 +249,8 @@
           h(
             "div",
             { className: "toolbar" },
-            showBack
-              ? h(
-                  "button",
-                  {
-                    type: "button",
-                    className: "ghost-button back",
-                    onClick: () => send("back")
-                  },
-                  "←",
-                  h("span", null, "History")
-                )
-              : h("div", { className: "toolbar-pad" }),
             h("div", { className: "toolbar-fill" }),
+            h(ModelPill, { state }),
             h(
               "button",
               {
@@ -115,9 +260,8 @@
                 onClick: () => send("openShortcutSettings")
               },
               h("span", null, "shortcut:"),
-              h("strong", null, state.shortcutLabel || "⌘⇧Space")
+              h("strong", null, state.shortcutLabel || "⌃⇧M")
             ),
-            showStatus ? h("div", { className: "status", title: status }, status) : null,
             h("button", {
               type: "button",
               className: `toggle${state.debugVisible ? " is-on" : ""}`,
@@ -140,6 +284,22 @@
           h("p", { className: "subline" }, labelForView(state))
         ),
         h("div", { className: "body" }, children),
+        showBack
+          ? h(
+              "div",
+              { className: "bottom-back-bar" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "ghost-button back",
+                  onClick: () => send("back")
+                },
+                "←",
+                h("span", null, "History")
+              )
+            )
+          : null,
         state.debugVisible ? h(DebugDrawer, { text: state.debug }) : null
       )
     );
@@ -240,7 +400,7 @@
     return h(
       "div",
       { className: "shortcut-page" },
-      h("div", { className: "shortcut-current" }, state.shortcutLabel || "⌘⇧Space"),
+      h("div", { className: "shortcut-current" }, state.shortcutLabel || "⌃⇧M"),
       h("div", { className: "shortcut-target" }, "listening"),
       state.shortcutError ? h("div", { className: "shortcut-error" }, state.shortcutError) : null
     );

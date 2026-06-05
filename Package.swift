@@ -3,17 +3,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "Denebula",
+    name: "MikuExplains",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "Denebula", targets: ["Denebula"])
+        .executable(name: "MikuExplains", targets: ["MikuExplains"])
     ],
     targets: [
         .executableTarget(
-            name: "Denebula",
-            path: "Sources/Denebula"
+            name: "MikuExplains",
+            path: "Sources/MikuExplains"
         )
     ]
 )
