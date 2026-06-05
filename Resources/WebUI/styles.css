@@ -354,6 +354,10 @@ button {
   padding: 5px 3px 12px;
 }
 
+.history-scroll {
+  padding-top: 18px;
+}
+
 .answer-card {
   --card-bg: rgba(232, 255, 251, 0.9);
   --card-border: rgba(15, 198, 207, 0.46);
@@ -566,6 +570,7 @@ button {
 .history-stack {
   display: grid;
   gap: 1px;
+  padding-bottom: 10px;
 }
 
 .history-item {

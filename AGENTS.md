@@ -44,7 +44,7 @@
 - If Codex enters the second web-search verification pass, the loading UI switches to a `Verifying` phase with a green ring, green percent text, and `Searching web` caption.
 - Validity analysis is no longer a hardcoded slot; it appears only when Codex returns a validity card.
 - The main panel UI should be edited in React/CSS, not AppKit. It uses a soft Miku-inspired palette: pale mint/pink gradient paper, teal ink accents, pink sketch accents, rounded/marker-like fonts, a dedicated masthead composition, and a large `miku.png` sticker illustration.
-- The history list is rendered by React as simple date-plus-tagline text rows on the pastel panel, with no AppKit button chrome. Do not re-add a repeated right-side intent/result label; it crowds the scrollbar and does not communicate useful information.
+- The history list is rendered by React as simple date-plus-tagline text rows on the pastel panel, with no AppKit button chrome. Do not re-add a repeated right-side intent/result label; it crowds the scrollbar and does not communicate useful information. Keep a small top offset in the history scroll area so the large Miku sticker does not cover the first saved row.
 - History timestamps use a compact format like `May 19, 2:14 AM` so the time fits in the React history row.
 - The debug area is controlled by a switch and is off by default. When enabled it logs the full capture pipeline: source, character count, capture path, Codex raw output path, Codex launch, and Codex success/failure.
 - The back arrow opens a history page of verified results. The history scanner lists new `*-result.json` files and legacy `*-summary.md` files whose matching pre-result `[timestamp].md` capture exists.
