@@ -138,6 +138,7 @@ final class OllamaManager: @unchecked Sendable {
         )
         let delegate = PullStreamDelegate(tag: tag, progress: progress, completion: completion)
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        delegate.session = session
         session.dataTask(with: request).resume()
     }
 
@@ -159,94 +160,56 @@ final class OllamaManager: @unchecked Sendable {
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
         let destDir = "\(home)/.ollama/bin"
         let destPath = "\(destDir)/ollama"
-        let tgzURL = URL(string: "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz")!
 
-        let task = URLSession.shared.downloadTask(with: tgzURL) { tmpURL, response, error in
-            if let error {
-                Task { @MainActor in completion(.failure(error)) }
-                return
-            }
-            guard let tmpURL else {
-                Task { @MainActor in
-                    completion(.failure(NSError(domain: "OllamaManager", code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Download produced no file."])))
-                }
-                return
-            }
+        // Use curl (handles GitHub redirects correctly) to download and pipe
+        // straight into tar. No sudo — installs to ~/.ollama/bin/ollama only.
+        let script = """
+            set -e
+            mkdir -p "\(destDir)"
+            curl -fsSL "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz" \
+                | tar -xz -C "\(destDir)"
+            # tgz may extract as bin/ollama inside destDir; flatten if needed
+            if [ -f "\(destDir)/bin/ollama" ] && [ ! -f "\(destPath)" ]; then
+                mv "\(destDir)/bin/ollama" "\(destPath)"
+            fi
+            chmod +x "\(destPath)"
+            """
 
-            // Verify we got something real (tgz magic bytes: 1f 8b)
-            if let fh = try? FileHandle(forReadingFrom: tmpURL) {
-                let header = fh.readData(ofLength: 2)
-                fh.closeFile()
-                guard header.count == 2, header[0] == 0x1f, header[1] == 0x8b else {
-                    Task { @MainActor in
-                        completion(.failure(NSError(domain: "OllamaManager", code: 2,
-                            userInfo: [NSLocalizedDescriptionKey: "Download was not a valid archive. Try again."])))
-                    }
-                    return
-                }
-            }
-
-            Task { @MainActor in progress("Installing Ollama…") }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", script]
+            let errPipe = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errPipe
 
             do {
-                let fm = FileManager.default
-                try fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
-
-                // Move tgz to a stable path so tar can read it
-                let tgzDest = URL(fileURLWithPath: "\(destDir)/ollama-darwin.tgz")
-                if fm.fileExists(atPath: tgzDest.path) { try fm.removeItem(at: tgzDest) }
-                try fm.moveItem(at: tmpURL, to: tgzDest)
-
-                // Extract: tar -xzf ollama-darwin.tgz -C destDir
-                let tar = Process()
-                tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-                tar.arguments = ["-xzf", tgzDest.path, "-C", destDir]
-                tar.standardOutput = FileHandle.nullDevice
-                tar.standardError = FileHandle.nullDevice
-                try tar.run()
-                tar.waitUntilExit()
-                try? fm.removeItem(at: tgzDest)
-
-                guard tar.terminationStatus == 0 else {
-                    throw NSError(domain: "OllamaManager", code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to extract Ollama archive (tar exited \(tar.terminationStatus))."])
-                }
-
-                // The tgz may extract to bin/ollama relative to destDir,
-                // or directly as ollama. Find it and ensure it's at destPath.
-                let candidates = [
-                    destPath,
-                    "\(destDir)/bin/ollama"
-                ]
-                var found: String?
-                for c in candidates where fm.fileExists(atPath: c) { found = c; break }
-
-                guard let binaryPath = found else {
-                    throw NSError(domain: "OllamaManager", code: 4,
-                        userInfo: [NSLocalizedDescriptionKey: "ollama binary not found after extraction."])
-                }
-
-                // Move to canonical location if needed
-                if binaryPath != destPath {
-                    if fm.fileExists(atPath: destPath) { try fm.removeItem(atPath: destPath) }
-                    try fm.moveItem(atPath: binaryPath, toPath: destPath)
-                }
-
-                // chmod +x
-                var attrs = try fm.attributesOfItem(atPath: destPath)
-                attrs[.posixPermissions] = 0o755
-                try fm.setAttributes(attrs, ofItemAtPath: destPath)
-
-                Task { @MainActor in
-                    progress("Ollama installed.")
-                    completion(.success(()))
-                }
+                try process.run()
+                process.waitUntilExit()
             } catch {
                 Task { @MainActor in completion(.failure(error)) }
+                return
+            }
+
+            if process.terminationStatus != 0 {
+                let raw = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let msg = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { @MainActor in
+                    completion(.failure(NSError(
+                        domain: "OllamaManager", code: Int(process.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: msg.isEmpty
+                            ? "Ollama install failed (status \(process.terminationStatus))."
+                            : msg]
+                    )))
+                }
+                return
+            }
+
+            Task { @MainActor in
+                progress("Ollama installed.")
+                completion(.success(()))
             }
         }
-        task.resume()
     }
 
     // MARK: - Helpers
@@ -270,6 +233,7 @@ private final class PullStreamDelegate: NSObject, URLSessionDataDelegate, @unche
     private let onCompletion: @MainActor (Result<Void, Error>) -> Void
     private var buffer = Data()
     private var lastReportedProgress: Double = 0
+    var session: URLSession?  // retained so ARC doesn't cancel the task
 
     init(
         tag: String,
