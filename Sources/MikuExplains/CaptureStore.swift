@@ -16,28 +16,16 @@ enum CaptureStoreError: LocalizedError {
 
 final class CaptureStore: @unchecked Sendable {
     private let fileManager: FileManager
-    private let timestampFormatter: DateFormatter
-    private let displayFormatter: DateFormatter
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
-
-        let timestampFormatter = DateFormatter()
-        timestampFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timestampFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        self.timestampFormatter = timestampFormatter
-
-        let displayFormatter = DateFormatter()
-        displayFormatter.locale = Locale.current
-        displayFormatter.dateFormat = "MMM d, h:mm a"
-        self.displayFormatter = displayFormatter
     }
 
     func save(_ text: String, capturedAt date: Date = Date()) throws -> CaptureRecord {
         let directory = try capturesDirectory()
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let baseName = timestampFormatter.string(from: date)
+        let baseName = Self.timestampFormatter().string(from: date)
         var fileURL = directory.appendingPathComponent("\(baseName).md")
         var duplicateIndex = 2
 
@@ -68,7 +56,7 @@ final class CaptureStore: @unchecked Sendable {
         try resultData.write(to: resultURL, options: .atomic)
         try? fileManager.removeItem(at: record.rawSummaryURL)
 
-        return SummaryRecord(
+        let summaryRecord = SummaryRecord(
             timestamp: record.captureBaseName,
             displayTimestamp: displayTimestamp(for: record.captureBaseName),
             tagline: parsedSummary.tagline,
@@ -79,6 +67,8 @@ final class CaptureStore: @unchecked Sendable {
             captureURL: record.captureURL,
             summaryURL: resultURL
         )
+        try upsertSummaryIndex(summaryRecord)
+        return summaryRecord
     }
 
     func listSummaries() throws -> [SummaryRecord] {
@@ -94,12 +84,22 @@ final class CaptureStore: @unchecked Sendable {
         )
         let filenames = Set(files.map(\.lastPathComponent))
 
-        return files
+        let scannedSummaries = files
             .filter { $0.lastPathComponent.hasSuffix("-result.json") || $0.lastPathComponent.hasSuffix("-summary.md") }
             .compactMap { summaryURL in
                 try? summaryMetadata(from: summaryURL, filenames: filenames)
             }
-            .sorted { $0.timestamp > $1.timestamp }
+        let indexedSummaries = indexedSummaryMetadata(in: directory, filenames: filenames)
+        let indexedBySummaryFilename = Dictionary(
+            uniqueKeysWithValues: indexedSummaries.map { ($0.summaryURL.lastPathComponent, $0) }
+        )
+        let mergedSummaries = scannedSummaries.map { scanned in
+            indexedBySummaryFilename[scanned.summaryURL.lastPathComponent] ?? scanned
+        }
+        if mergedSummaries.isEmpty == false {
+            try? rewriteSummaryIndex(mergedSummaries)
+        }
+        return mergedSummaries.sorted { $0.timestamp > $1.timestamp }
     }
 
     func loadSummary(_ record: SummaryRecord) throws -> SummaryRecord {
@@ -145,6 +145,68 @@ final class CaptureStore: @unchecked Sendable {
         return applicationSupport
             .appendingPathComponent("MikuExplains", isDirectory: true)
             .appendingPathComponent("Captures", isDirectory: true)
+    }
+
+    private func indexURL() throws -> URL {
+        try capturesDirectory().appendingPathComponent("summary-index.json", isDirectory: false)
+    }
+
+    private func indexedSummaryMetadata(in directory: URL, filenames: Set<String>) -> [SummaryRecord] {
+        guard let indexURL = try? indexURL(),
+              let data = try? Data(contentsOf: indexURL),
+              let index = try? JSONDecoder().decode(SummaryIndex.self, from: data) else {
+            return []
+        }
+
+        return index.records.compactMap { entry in
+            guard filenames.contains(entry.captureFilename),
+                  filenames.contains(entry.summaryFilename) else {
+                return nil
+            }
+
+            return SummaryRecord(
+                timestamp: entry.timestamp,
+                displayTimestamp: entry.displayTimestamp,
+                tagline: entry.tagline,
+                primaryIntent: entry.primaryIntent,
+                intentConfidence: entry.intentConfidence,
+                usedWebSearch: entry.usedWebSearch,
+                cards: [],
+                captureURL: directory.appendingPathComponent(entry.captureFilename, isDirectory: false),
+                summaryURL: directory.appendingPathComponent(entry.summaryFilename, isDirectory: false)
+            )
+        }
+    }
+
+    private func upsertSummaryIndex(_ record: SummaryRecord) throws {
+        var records = loadSummaryIndexRecords()
+        let entry = SummaryIndexRecord(record: record)
+        records.removeAll { $0.summaryFilename == entry.summaryFilename }
+        records.append(entry)
+        try writeSummaryIndex(records)
+    }
+
+    private func rewriteSummaryIndex(_ summaries: [SummaryRecord]) throws {
+        try writeSummaryIndex(summaries.map(SummaryIndexRecord.init(record:)))
+    }
+
+    private func loadSummaryIndexRecords() -> [SummaryIndexRecord] {
+        guard let indexURL = try? indexURL(),
+              let data = try? Data(contentsOf: indexURL),
+              let index = try? JSONDecoder().decode(SummaryIndex.self, from: data) else {
+            return []
+        }
+
+        return index.records
+    }
+
+    private func writeSummaryIndex(_ records: [SummaryIndexRecord]) throws {
+        let indexURL = try indexURL()
+        let index = SummaryIndex(version: 1, records: records.sorted { $0.timestamp > $1.timestamp })
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(index)
+        try data.write(to: indexURL, options: .atomic)
     }
 
     private func summaryMetadata(from summaryURL: URL, filenames: Set<String>) throws -> SummaryRecord {
@@ -246,11 +308,52 @@ final class CaptureStore: @unchecked Sendable {
 
     private func displayTimestamp(for timestamp: String) -> String {
         let baseTimestamp = String(timestamp.prefix(19))
-        guard let date = timestampFormatter.date(from: baseTimestamp) else {
+        guard let date = Self.timestampFormatter().date(from: baseTimestamp) else {
             return timestamp
         }
 
-        return displayFormatter.string(from: date)
+        return Self.displayFormatter().string(from: date)
+    }
+
+    private static func timestampFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return formatter
+    }
+
+    private static func displayFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateFormat = "MMM d, h:mm a"
+        return formatter
+    }
+}
+
+private struct SummaryIndex: Codable {
+    let version: Int
+    let records: [SummaryIndexRecord]
+}
+
+private struct SummaryIndexRecord: Codable {
+    let timestamp: String
+    let displayTimestamp: String
+    let tagline: String
+    let primaryIntent: String
+    let intentConfidence: String
+    let usedWebSearch: Bool
+    let captureFilename: String
+    let summaryFilename: String
+
+    init(record: SummaryRecord) {
+        timestamp = record.timestamp
+        displayTimestamp = record.displayTimestamp
+        tagline = record.tagline
+        primaryIntent = record.primaryIntent
+        intentConfidence = record.intentConfidence
+        usedWebSearch = record.usedWebSearch
+        captureFilename = record.captureURL.lastPathComponent
+        summaryFilename = record.summaryURL.lastPathComponent
     }
 }
 

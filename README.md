@@ -1,14 +1,113 @@
 # Miku Explains
 
-Miku Explains is a whimsical macOS menu bar prototype for highlight-to-AI actions using temporary clipboard copy/restore.
+Miku Explains is a whimsical highlight-to-AI desktop app. Highlight text anywhere, press the global shortcut, and the app infers what kind of help you probably want: definition, translation, summary, fact/context check, actions, code help, numerical sanity, or another small set of dynamic result cards.
 
-The native Swift app owns the menu bar, global shortcut, clipboard capture, persistence, Codex CLI process, and window placement. The visible result panel is a bundled React UI hosted in a transparent `WKWebView`.
+The currently tested app is the native macOS Swift menu bar app in `Sources/MikuExplains`. The repo also contains an experimental Rust/Tauri port; see `PORT_NOTES.md`.
 
-Highlight text in another app, press `Command + Shift + Space`, and Miku Explains copies the selection, restores your prior clipboard, saves the text, and asks Codex to infer what kind of help you likely want. The shortcut is configurable from the panel toolbar. When the panel is already open, pressing the shortcut closes it if nothing new is selected, or starts a fresh explanation if you highlighted different text.
+## Current Swift App
+
+The Swift app owns the macOS menu bar item, global shortcut, clipboard capture, persistence, backend routing, llama.cpp server management, and top-right panel window placement. The visible UI is a bundled React panel hosted in a transparent `WKWebView`.
+
+Default shortcut:
 
 ```text
-capture -> [timestamp].md -> Codex -> [timestamp]-[tagline]-result.json
+Command + Shift + Space
 ```
+
+The shortcut is configurable from the toolbar. When the panel is closed, pressing the shortcut opens the panel immediately in a `Reading` loading state, then copies the highlighted text. When the panel is already open, pressing the shortcut checks the current selection: no selection closes the panel, the same selection closes the panel, and a different selection starts a new pipeline.
+
+Selected-text capture uses a clipboard copy/restore path:
+
+```text
+save pasteboard -> clear pasteboard -> send Command+C -> wait up to 0.5s -> read copied text -> restore pasteboard
+```
+
+The app asks for macOS Accessibility permission so it can send the synthetic `Command+C`.
+
+## Pipeline
+
+Successful captures are saved as Markdown files:
+
+```text
+~/Library/Application Support/MikuExplains/Captures/yyyy-MM-dd_HH-mm-ss.md
+```
+
+The Swift pipeline then writes a tagged JSON result:
+
+```text
+capture.md -> SummaryPipeline -> backend -> [timestamp]-[tagline]-result.json
+```
+
+`summary-index.json` keeps history metadata warm and fast. Legacy `*-summary.md` result files are still readable if their matching capture file exists.
+
+## Backends
+
+`codex` uses the local Codex CLI and is the only Swift backend that can run the second web-search verification pass.
+
+Every other supported model tag uses the managed llama.cpp backend. Miku Explains downloads the full `llama-server` runtime into:
+
+```text
+~/Library/Application Support/MikuExplains/Models/llama-server-runtime/
+```
+
+Downloaded GGUF models live under:
+
+```text
+~/Library/Application Support/MikuExplains/Models/<model-tag>/model.gguf
+```
+
+The Swift app no longer uses Ollama.
+
+### Local Model Streaming
+
+The managed llama.cpp backend uses OpenAI-compatible streaming for local models only. Codex remains final-response based because it is also responsible for the optional web-search verification pass.
+
+For llama.cpp models, Swift sends `stream: true`, `max_tokens: 1024`, and `cache_prompt: true` to `/v1/chat/completions` and reads server-sent event chunks from `llama-server`. The prompt uses an ordered key contract rather than copyable placeholder JSON values, keeps the stable instruction prefix before the changing highlighted text/date/hints so llama.cpp can reuse prefix KV cache, then forces deterministic JSON key order so the app can parse useful partial structure before the full JSON is valid:
+
+```json
+{
+  "tagline": "...",
+  "primary_intent": "...",
+  "intent_confidence": "...",
+  "items": [
+    {
+      "id": "card_1",
+      "type": "...",
+      "title": "...",
+      "body": "...",
+      "confidence": "...",
+      "tool": {
+        "name": "calendar.create_event",
+        "label": "Add to Calendar",
+        "params": {
+          "title": "Event title",
+          "start": "2026-06-09T15:00:00-04:00",
+          "end": "2026-06-09T16:00:00-04:00",
+          "notes": "Optional notes"
+        }
+      }
+    }
+  ]
+}
+```
+
+The result panel opens as soon as a complete `tagline` and `primary_intent` have streamed in. The streaming parser then reads the single `items` array directly: when an item has complete `type` and `title` fields and its `body` string starts, that card appears and its body updates as more tokens arrive. History and disk persistence prefer the final complete JSON, but if llama.cpp stops mid-JSON after cards have streamed, Swift saves those partial cards with a `Local output cut off` note instead of replacing the result with an instruction-failure card.
+
+Tool payloads are optional. The first supported accept buttons are `calendar.create_event` and `reminders.create_reminder`; React shows a button on the card, and Swift executes the tool through EventKit only after the user clicks. The prompt includes the current local date/time/timezone so vague dates like "Tuesday" can resolve to the next future occurrence.
+
+Weak local models sometimes print a pseudo tool call in the card body instead of emitting a separate `tool` object. Swift salvages simple `calendar.create_event params: {...}` and `reminders.create_reminder params: {...}` bodies into real tool payloads, ignores null params, and replaces the raw call text with a readable card body.
+
+## UI
+
+The panel UI lives in:
+
+```text
+Resources/WebUI/index.html
+Resources/WebUI/app.js
+Resources/WebUI/styles.css
+```
+
+Swift sends state into React, and React sends events back through `window.webkit.messageHandlers.mikuPanel`. The panel uses Miku assets from `Resources/`, dynamic hand-drawn result cards, a history list, a debug drawer, fake loading rings, model controls, hover/click animations, and focused/unfocused styling driven by native `NSWindow` focus state.
 
 ## Build
 
@@ -18,28 +117,43 @@ swift build
 
 ## Run
 
+For a quick SwiftPM run:
+
 ```sh
 swift run MikuExplains
 ```
 
-For a more app-like run with a stable macOS app identity:
+For the normal menu bar app flow:
 
 ```sh
-chmod +x scripts/package_app.sh
 scripts/package_app.sh
 open "dist/Miku Explains.app"
 ```
 
-On first run, grant Accessibility permission in System Settings when prompted. Miku Explains uses that permission only to send `Command + C` to the frontmost app. It temporarily copies the selection, reads the copied text, and restores the previous clipboard contents.
+On first run, grant Accessibility permission in System Settings.
 
-Each successful capture is saved as a Markdown file in:
+If System Settings says Miku Explains already has Accessibility permission but the app still reports that it does not, remove Miku Explains from Accessibility, quit the app, relaunch `dist/Miku Explains.app`, and add it again. Rebuilt unsigned prototype apps can leave stale macOS privacy entries behind.
+
+## Dev Reset
+
+`scripts/dev.sh` is intentionally destructive. It kills the running app, stops the managed llama.cpp server, deletes:
 
 ```text
-~/Library/Application Support/MikuExplains/Captures/
+~/Library/Application Support/MikuExplains
+~/Library/Application Support/Denebula
 ```
 
-After saving the capture, Miku Explains runs the local Codex CLI using your Codex app login. Codex returns a short tagline, an inferred intent, and dynamic result items rendered as React cards. If Codex decides web verification is useful, the app enters a green `Verifying` loading phase and runs a second `codex --search exec ...` pass.
+then resets saved defaults, resets Accessibility permission, rebuilds, packages, and relaunches the app.
 
-The packaged app uses `Resources/miku_crop.png` as the rounded-square menu bar icon, `Resources/AppIcon.icns` as the bundle app icon generated from that same crop, `Resources/miku.png` as the React panel sticker, and `Resources/WebUI/` for the bundled panel UI.
+## Rust/Tauri Port
 
-If System Settings says Miku Explains already has Accessibility permission but the app still reports that it does not, remove Miku Explains from the Accessibility list, quit the app, relaunch `dist/Miku Explains.app`, and add it again. Rebuilt unsigned prototype apps can leave stale macOS privacy entries behind.
+The Rust/Tauri port is in `src-tauri/` and `crates/miku-core/`. The core crate owns prompt construction, provider abstraction, result parsing, summarization orchestration, and a SQLite capture/result store. The Tauri shell owns tray, shortcut, clipboard capture, panel placement, and the React bridge.
+
+Useful commands:
+
+```sh
+cargo test -p miku-core --test core_tests
+cargo test -p miku-core --test llama_e2e -- --nocapture
+cargo build --workspace
+cargo run -p miku-explains
+```

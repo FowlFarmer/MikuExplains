@@ -4,12 +4,21 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let textReader = SelectedTextReader()
     private let captureStore = CaptureStore()
-    private let summarizationLock = SummarizationLock()
+    private let toolExecutor = MikuToolExecutor()
     private lazy var codexSummarizer = CodexSummarizer(captureStore: captureStore)
-    private lazy var ollamaSummarizer = OllamaSummarizer(captureStore: captureStore)
+    private lazy var llamaCppSummarizer = LlamaCppSummarizer(captureStore: captureStore)
+    private lazy var backendRouter = InferenceBackendRouter(
+        codexBackend: codexSummarizer,
+        llamaCppBackend: llamaCppSummarizer
+    )
+    private lazy var summaryPipeline = SummaryPipeline(
+        captureStore: captureStore,
+        summarizationLock: SummarizationLock(),
+        backendRouter: backendRouter
+    )
 
     /// The currently selected model ID. "codex" means use Codex CLI;
-    /// any other value is an Ollama model tag (e.g. "qwen3:4b").
+    /// any other value is a llama.cpp model tag (e.g. "qwen3:4b").
     private var activeModel: String = "codex" {
         didSet { saveModel(activeModel) }
     }
@@ -18,12 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlayController = CollapseOverlayWindowController()
     private var statusItem: NSStatusItem?
     private var hotKeyController: HotKeyController?
-    private var activeLockToken: SummarizationLockToken?
     private var cachedSummaries: [SummaryRecord] = []
     private var hasLoadedSummaryCache = false
     private var isRefreshingSummaryCache = false
     private var lastCapturedText: String?
     private var shouldRevealCurrentSummary = true
+    private var isShowingStreamingResult = false
     private static let shortcutDefaultsKey = "MikuExplainsShortcut"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -46,20 +55,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overlayController.showMessage(error.localizedDescription)
         }
 
-        // Start Ollama server in the background so the first inference
-        // doesn't pay the cold-start penalty. The daemon is ~50 MB with
-        // no model loaded; the model only loads on the first request and
-        // unloads after 5 min idle.
+        // Reap any orphan llama-server PID and stale pull state from a
+        // previous (possibly crashed) run. Cheap when there's nothing to do.
+        LlamaCppManager.shared.reapStaleState()
+
+        // Pre-warm the chosen local backend so the first inference doesn't
+        // pay the cold-start penalty. llama.cpp's server stays running for
+        // the lifetime of the app so the first shortcut is instant.
         if activeModel != "codex" {
-            DispatchQueue.global(qos: .background).async {
-                OllamaManager.shared.ensureServerRunning()
+            let modelPath = LlamaCppManager.shared.ggufFileURL(for: activeModel)
+            if FileManager.default.fileExists(atPath: modelPath.path) {
+                overlayController.appendDebugLine("Pre-warming llama-server with \(activeModel)…")
+                LlamaCppManager.shared.prewarmServer(modelPath: modelPath) { [weak self] in
+                    self?.overlayController.appendDebugLine("llama-server ready.")
+                }
+            } else {
+                overlayController.appendDebugLine("llama.cpp model not installed yet — server will start after pull")
             }
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         hotKeyController?.unregister()
-        OllamaManager.shared.stopManagedServer()
+        LlamaCppManager.shared.stopManagedServer()
     }
 
     private func configureStatusItem() {
@@ -72,6 +90,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(
             title: "Explain Selection",
             action: #selector(collapseSelectedTextFromMenu),
+            keyEquivalent: ""
+        ))
+        menu.addItem(NSMenuItem(
+            title: "Past Summaries",
+            action: #selector(showHistoryFromMenu),
             keyEquivalent: ""
         ))
         menu.addItem(NSMenuItem(
@@ -104,6 +127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.onPullModel = { [weak self] model in
             self?.handlePullModel(model)
         }
+        overlayController.onExecuteTool = { [weak self] tool in
+            self?.handleExecuteTool(tool)
+        }
         overlayController.onReady = { [weak self] in
             self?.sendModelsToPanel()
         }
@@ -115,6 +141,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func requestAccessibilityPermissionFromMenu() {
         requestAccessibilityPermission()
+    }
+
+    @objc private func showHistoryFromMenu() {
+        showHistory()
     }
 
     @objc private func quit() {
@@ -159,15 +189,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleCollapseSelectedText() {
-        guard acquireSummarizationLock() else {
+        switch summaryPipeline.reserveForCapture() {
+        case .success:
+            break
+        case .failure(let error):
+            NSLog("Miku Explains summarization lock blocked shortcut: %@", error.localizedDescription)
+            overlayController.showMessage(error.localizedDescription)
+            overlayController.appendDebugLine("Shortcut ignored: \(error.localizedDescription)")
             return
         }
 
-        overlayController.hide()
+        showReadingSelectionPanel()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.collapseSelectedText()
         }
+    }
+
+    private func showReadingSelectionPanel() {
+        overlayController.showLoading(
+            title: "Reading",
+            debug: "Shortcut received.\nReading selected text...",
+            onBack: { [weak self] in self?.showHistory() }
+        )
     }
 
     private func collapseSelectedText() {
@@ -176,114 +220,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             beginPipeline(for: capture, lockAlreadyAcquired: true)
         case .failure(let error):
             NSLog("Miku Explains capture failed: %@", error.localizedDescription)
-            releaseSummarizationLock()
+            summaryPipeline.releaseReservedCapture()
             showHistory(debugLine: "No copied text found. Showing past results. \(error.localizedDescription)")
         }
     }
 
     private func beginPipeline(for capture: CapturedText, lockAlreadyAcquired: Bool) {
-        guard lockAlreadyAcquired || acquireSummarizationLock() else {
-            return
-        }
-
         lastCapturedText = capture.text
         shouldRevealCurrentSummary = true
-        let initialDebug = """
-        Capture source: \(capture.source.rawValue)
-        Captured characters: \(capture.text.count)
-        Saving capture...
-        """
+        isShowingStreamingResult = false
         NSLog("Miku Explains captured %d characters via %@", capture.text.count, capture.source.rawValue)
         overlayController.showLoading(
             title: "Summarizing",
-            debug: initialDebug,
+            debug: "",
             onBack: { [weak self] in self?.showHistory() }
         )
-        saveCaptureAndSummarize(capture.text)
+        summaryPipeline.run(
+            capture: capture,
+            model: activeModel,
+            lockAlreadyAcquired: lockAlreadyAcquired,
+            events: pipelineEvents()
+        )
     }
 
-    private func saveCaptureAndSummarize(_ text: String) {
-        do {
-            let record = try captureStore.save(text)
-            NSLog("Miku Explains saved capture to %@", record.captureURL.path)
-            overlayController.appendDebugLine("Saved capture: \(record.captureURL.path)")
-            overlayController.appendDebugLine("Raw Codex output: \(record.rawSummaryURL.path)")
-            overlayController.appendDebugLine("Launching Codex CLI...")
-            summarize(record)
-        } catch {
-            NSLog("Miku Explains failed to save capture: %@", error.localizedDescription)
-            overlayController.appendDebugLine("Save failed: \(error.localizedDescription)")
-            releaseSummarizationLock()
-        }
-    }
-
-    private func summarize(_ record: CaptureRecord) {
-        if activeModel == "codex" {
-            summarizeWithCodex(record)
-        } else {
-            summarizeWithOllama(record, model: activeModel)
-        }
-    }
-
-    private func summarizeWithCodex(_ record: CaptureRecord) {
-        codexSummarizer.summarize(
-            record: record,
-            onProcessStarted: { [weak self] processIdentifier in
-                self?.markSummarizationLockProcess(processIdentifier)
-                self?.overlayController.appendDebugLine("Codex PID: \(processIdentifier)")
+    private func pipelineEvents() -> SummaryPipelineEvents {
+        SummaryPipelineEvents(
+            debug: { [weak self] line in
+                self?.overlayController.appendDebugLine(line)
             },
-            onWebSearchStarted: { [weak self] in
+            savedCapture: { [weak self] record in
+                NSLog("Miku Explains saved capture to %@", record.captureURL.path)
+                self?.overlayController.appendDebugLine("Saved capture: \(record.captureURL.path)")
+                self?.overlayController.appendDebugLine("Raw output: \(record.rawSummaryURL.path)")
+            },
+            webSearchStarted: { [weak self] in
                 self?.overlayController.showWebSearchLoadingPhase()
-                self?.overlayController.appendDebugLine("Entering web search verification phase...")
-            }
-        ) { result in
-            self.handleSummaryResult(result, providerLabel: "Codex")
-        }
-    }
-
-    private func summarizeWithOllama(_ record: CaptureRecord, model: String) {
-        overlayController.appendDebugLine("Ollama model: \(model)")
-        ollamaSummarizer.summarize(
-            record: record,
-            model: model,
-            onProcessStarted: { [weak self] _ in
-                self?.markSummarizationLockProcess(0)
-                self?.overlayController.appendDebugLine("Ollama request sent")
             },
-            onWebSearchStarted: { }
-        ) { result in
-            self.handleSummaryResult(result, providerLabel: "Ollama/\(model)")
-        }
-    }
-
-    private func handleSummaryResult(
-        _ result: Result<SummaryRecord, CodexSummarizerError>,
-        providerLabel: String
-    ) {
-        releaseSummarizationLock()
-
-        switch result {
-        case .success(let summary):
-            NSLog("Miku Explains saved %@ result to %@", providerLabel, summary.summaryURL.path)
-            cacheSummary(summary)
-            guard shouldRevealCurrentSummary else {
-                shouldRevealCurrentSummary = true
-                return
-            }
-            overlayController.completeLoading {
-                self.overlayController.showResult(
-                    title: summary.tagline,
-                    intent: summary.primaryIntent,
-                    usedWebSearch: summary.usedWebSearch,
-                    cards: summary.cards,
-                    debug: "\(providerLabel) result saved: \(summary.summaryURL.path)",
+            partialResult: { [weak self] snapshot in
+                guard let self, self.shouldRevealCurrentSummary else {
+                    return
+                }
+                self.isShowingStreamingResult = true
+                self.overlayController.showStreamingResult(
+                    title: snapshot.title,
+                    intent: snapshot.primaryIntent,
+                    cards: snapshot.cards,
                     onBack: { [weak self] in self?.showHistory() }
                 )
+            },
+            completed: { [weak self] summary, providerLabel in
+                self?.handlePipelineCompleted(summary, providerLabel: providerLabel)
+            },
+            failed: { [weak self] error, providerLabel in
+                self?.handlePipelineFailed(error, providerLabel: providerLabel)
             }
-        case .failure(let error):
-            NSLog("Miku Explains %@ result failed: %@", providerLabel, error.localizedDescription)
-            overlayController.appendDebugLine("\(providerLabel) failed: \(error.localizedDescription)")
+        )
+    }
+
+    private func handlePipelineCompleted(_ summary: SummaryRecord, providerLabel: String) {
+        NSLog("Miku Explains saved %@ result to %@", providerLabel, summary.summaryURL.path)
+        cacheSummary(summary)
+        guard shouldRevealCurrentSummary else {
+            shouldRevealCurrentSummary = true
+            isShowingStreamingResult = false
+            return
         }
+        if isShowingStreamingResult {
+            isShowingStreamingResult = false
+            overlayController.showResult(
+                title: summary.tagline,
+                intent: summary.primaryIntent,
+                usedWebSearch: summary.usedWebSearch,
+                cards: summary.cards,
+                debug: "\(providerLabel) result saved: \(summary.summaryURL.path)",
+                preserveExistingDebug: true,
+                onBack: { [weak self] in self?.showHistory() }
+            )
+            return
+        }
+        overlayController.completeLoading {
+            self.overlayController.showResult(
+                title: summary.tagline,
+                intent: summary.primaryIntent,
+                usedWebSearch: summary.usedWebSearch,
+                cards: summary.cards,
+                debug: "\(providerLabel) result saved: \(summary.summaryURL.path)",
+                preserveExistingDebug: true,
+                onBack: { [weak self] in self?.showHistory() }
+            )
+        }
+    }
+
+    private func handlePipelineFailed(_ error: CodexSummarizerError, providerLabel: String) {
+        NSLog("Miku Explains %@ result failed: %@", providerLabel, error.localizedDescription)
+        overlayController.appendDebugLine("\(providerLabel) failed: \(error.localizedDescription)")
     }
 
     private func showHistory(debugLine: String? = nil) {
@@ -393,7 +423,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadModel() -> String {
-        UserDefaults.standard.string(forKey: Self.modelDefaultsKey) ?? "codex"
+        let savedModel = UserDefaults.standard.string(forKey: Self.modelDefaultsKey) ?? "codex"
+        let model = LlamaCppManager.canonicalModelTag(for: savedModel)
+        if model != savedModel {
+            saveModel(model)
+        }
+
+        if model == "codex" || LlamaCppManager.modelRegistry[model] != nil {
+            return model
+        }
+
+        return "codex"
     }
 
     private func saveModel(_ model: String) {
@@ -402,22 +442,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func sendModelsToPanel() {
         let selected = activeModel
-        let available = OllamaManager.shared.isOllamaInstalled
-        if available {
-            OllamaManager.shared.listInstalledModels { [weak self] models in
-                self?.overlayController.sendModels(models, selected: selected, ollamaAvailable: true)
-            }
-        } else {
-            overlayController.sendModels([], selected: selected, ollamaAvailable: false)
+        LlamaCppManager.shared.listInstalledModels { [weak self] models in
+            self?.overlayController.sendModels(
+                models,
+                selected: selected,
+                localBackendAvailable: true,
+                modelCatalog: LlamaCppManager.shared.modelCatalog()
+            )
         }
     }
 
     private func handleSetModel(_ model: String) {
-        activeModel = model
-        if model != "codex" {
-            overlayController.appendDebugLine("Switched to Ollama model: \(model)")
-            DispatchQueue.global(qos: .background).async {
-                OllamaManager.shared.ensureServerRunning()
+        let canonicalModel = LlamaCppManager.canonicalModelTag(for: model)
+        guard canonicalModel == "codex" || LlamaCppManager.modelRegistry[canonicalModel] != nil else {
+            overlayController.showMessage("Unknown local model: \(canonicalModel)")
+            overlayController.appendDebugLine("Model switch ignored: unknown llama.cpp model \(canonicalModel)")
+            return
+        }
+
+        activeModel = canonicalModel
+        if canonicalModel != "codex" {
+            overlayController.appendDebugLine("Switched to llama.cpp model: \(canonicalModel)")
+            let modelPath = LlamaCppManager.shared.ggufFileURL(for: canonicalModel)
+            if FileManager.default.fileExists(atPath: modelPath.path) {
+                overlayController.appendDebugLine("Pre-warming llama-server with \(canonicalModel)…")
+                LlamaCppManager.shared.prewarmServer(modelPath: modelPath) { [weak self] in
+                    self?.overlayController.appendDebugLine("llama-server ready.")
+                }
+            } else {
+                overlayController.appendDebugLine("Model not installed yet — pull it first")
             }
         }
         sendModelsToPanel()
@@ -426,21 +479,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activePullModel: String?
 
     private func handlePullModel(_ model: String) {
+        let canonicalModel = LlamaCppManager.canonicalModelTag(for: model)
+        guard LlamaCppManager.modelRegistry[canonicalModel] != nil else {
+            overlayController.showMessage("Unknown local model: \(canonicalModel)")
+            overlayController.appendDebugLine("Pull ignored: unknown llama.cpp model \(canonicalModel)")
+            return
+        }
+
         guard activePullModel == nil else {
             overlayController.appendDebugLine("Pull ignored: already pulling \(activePullModel!)")
             return
         }
-        activePullModel = model
-        overlayController.appendDebugLine("Pull started: \(model)")
+        activePullModel = canonicalModel
+        overlayController.appendDebugLine("Pull started: \(canonicalModel)")
+
+        handlePullModelLlamaCpp(canonicalModel)
+    }
+
+    private func handlePullModelLlamaCpp(_ model: String) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            // Step 1: ensure ollama binary exists, downloading it if needed.
+            // Step 1: ensure llama-server binary is installed.
             let installSem = DispatchSemaphore(value: 0)
-            let installBox = UnsafeMutableTransfer<Error?>(nil)
-            OllamaManager.shared.ensureOllamaInstalled(
+            let installBox = UnsafeMutableTransfer<LlamaCppError?>(nil)
+            LlamaCppManager.shared.ensureServerBinaryInstalled(
                 progress: { [weak self] msg in
-                    self?.overlayController.appendDebugLine("Ollama install: \(msg)")
+                    self?.overlayController.appendDebugLine("llama.cpp install: \(msg)")
                     self?.overlayController.updateModelPull(
-                        model: model, progress: 0.0, done: false, error: nil, statusText: msg
+                        model: model, progress: 0.0, done: false, error: nil, statusText: "Preparing"
                     )
                 },
                 completion: { result in
@@ -452,7 +517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if let err = installBox.value {
                 Task { @MainActor [weak self] in
-                    let msg = "Ollama install failed: \(err.localizedDescription)"
+                    let msg = "llama.cpp install failed: \(err.localizedDescription)"
                     self?.overlayController.appendDebugLine(msg)
                     self?.overlayController.updateModelPull(
                         model: model, progress: 0, done: true, error: msg
@@ -462,34 +527,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            Task { @MainActor [weak self] in
-                self?.overlayController.appendDebugLine("Ollama ready, starting server…")
-            }
-
-            // Step 2: ensure server is running.
-            let serverUp = OllamaManager.shared.ensureServerRunning()
-            guard serverUp else {
-                Task { @MainActor [weak self] in
-                    let home = ProcessInfo.processInfo.environment["HOME"] ?? "?"
-                    let binaryExists = FileManager.default.fileExists(atPath: "\(home)/.ollama/bin/ollama")
-                    let msg = "Ollama server failed to start. Binary at ~/.ollama/bin/ollama: \(binaryExists ? "exists" : "MISSING")"
-                    self?.overlayController.appendDebugLine(msg)
-                    self?.overlayController.updateModelPull(model: model, progress: 0, done: true, error: msg)
-                    self?.activePullModel = nil
-                }
-                return
-            }
-
-            Task { @MainActor [weak self] in
-                self?.overlayController.appendDebugLine("Server up, pulling \(model)…")
-            }
-
-            // Step 3: pull the model.
-            OllamaManager.shared.pullModel(
+            // Step 2: download the GGUF. The server isn't needed for the
+            // download — it's started lazily on first inference.
+            LlamaCppManager.shared.pullModel(
                 model,
-                progress: { [weak self] ratio in
+                progress: { [weak self] ratio, statusText in
                     self?.overlayController.updateModelPull(
-                        model: model, progress: ratio, done: false, error: nil
+                        model: model, progress: ratio, done: false, error: nil, statusText: statusText
                     )
                 },
                 completion: { [weak self] result in
@@ -514,44 +558,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func cacheSummary(_ summary: SummaryRecord) {        cachedSummaries.removeAll { $0.summaryURL == summary.summaryURL }
+    private func handleExecuteTool(_ tool: AIResultTool) {
+        overlayController.appendDebugLine("Tool requested: \(tool.name)")
+        overlayController.showToolMessage("Working...")
+        toolExecutor.execute(tool) { [weak self] result in
+            guard let self else {
+                return
+            }
+
+            switch result {
+            case .success(let message):
+                self.overlayController.appendDebugLine("Tool success: \(message)")
+                self.overlayController.showToolMessage(message)
+            case .failure(let error):
+                let message = error.localizedDescription
+                self.overlayController.appendDebugLine("Tool failed: \(message)")
+                self.overlayController.showToolMessage(message)
+            }
+        }
+    }
+
+    // MARK: - Caching
+
+    private func cacheSummary(_ summary: SummaryRecord) {
+        cachedSummaries.removeAll { $0.summaryURL == summary.summaryURL }
         cachedSummaries.insert(summary, at: 0)
         cachedSummaries.sort { $0.timestamp > $1.timestamp }
         hasLoadedSummaryCache = true
-    }
-
-    private func acquireSummarizationLock() -> Bool {
-        guard activeLockToken == nil else {
-            overlayController.showMessage("Already summarizing. Wait for the current summary to finish.")
-            overlayController.appendDebugLine("Shortcut ignored: in-memory summarization lock is active.")
-            return false
-        }
-
-        do {
-            activeLockToken = try summarizationLock.acquire()
-            return true
-        } catch {
-            NSLog("Miku Explains summarization lock blocked shortcut: %@", error.localizedDescription)
-            overlayController.showMessage(error.localizedDescription)
-            overlayController.appendDebugLine("Shortcut ignored: \(error.localizedDescription)")
-            return false
-        }
-    }
-
-    private func releaseSummarizationLock() {
-        guard let activeLockToken else {
-            return
-        }
-
-        summarizationLock.release(activeLockToken)
-        self.activeLockToken = nil
-    }
-
-    private func markSummarizationLockProcess(_ processIdentifier: Int32) {
-        guard let activeLockToken else {
-            return
-        }
-
-        summarizationLock.updateProcessIdentifier(processIdentifier, for: activeLockToken)
     }
 }

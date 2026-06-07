@@ -19,12 +19,15 @@
     debugVisible: false,
     shortcutLabel: "⌃⇧M",
     shortcutError: "",
+    toolMessage: "",
     items: [EMPTY_ITEM],
     summaries: [],
     selectedModel: "codex",
     installedModels: [],
-    ollamaAvailable: true,
-    modelPull: null
+    modelCatalog: [],
+    localBackendAvailable: true,
+    modelPull: null,
+    isFocused: false
   };
   let updateState = null;
   let pendingState = null;
@@ -45,17 +48,33 @@
   const PRESET_MODELS = [
     { id: "codex",        label: "Codex CLI",   tag: null,            size: null,     speed: null },
     { id: "qwen2.5:3b",   label: "Qwen 2.5 3B", tag: "qwen2.5:3b",   size: "2 GB",   speed: "~90 t/s" },
+    { id: "qwen3.5:2b",   label: "Qwen 3.5 2B", tag: "qwen3.5:2b",   size: "1.28 GB", speed: null },
     { id: "qwen3:4b",     label: "Qwen 3 4B",   tag: "qwen3:4b",     size: "2.5 GB", speed: "~75 t/s" },
-    { id: "llama3.2:3b",  label: "Llama 3.2 3B",tag: "llama3.2:3b",  size: "2 GB",   speed: "~90 t/s" },
-    { id: "gemma3:4b",    label: "Gemma 3 4B",  tag: "gemma3:4b",    size: "3 GB",   speed: "~65 t/s" },
+    { id: "phi3:mini",    label: "Phi-3 Mini",  tag: "phi3:mini",    size: "2.3 GB", speed: "~75 t/s" },
     { id: "mistral:7b",   label: "Mistral 7B",  tag: "mistral:7b",   size: "4.5 GB", speed: "~50 t/s" },
   ];
 
-  function modelShortLabel(modelId) {
-    const found = PRESET_MODELS.find((m) => m.id === modelId);
+  function modelShortLabel(modelId, state) {
+    const catalog = currentModelCatalog(state || initialState);
+    const found = catalog.find((m) => m.id === modelId);
     if (found) return found.label;
     // For unknown installed models, truncate tag
     return modelId.length > 14 ? modelId.slice(0, 12) + "…" : modelId;
+  }
+
+  function currentModelCatalog(state) {
+    const localCatalog = Array.isArray(state.modelCatalog) && state.modelCatalog.length
+      ? state.modelCatalog
+      : PRESET_MODELS.filter((model) => model.id !== "codex");
+    return [PRESET_MODELS[0]].concat(localCatalog);
+  }
+
+  function modelPullLabel(pull) {
+    const percent = `${Math.round(Math.max(0, Math.min(1, pull.progress || 0)) * 100)}%`;
+    const status = String(pull.statusText || "").trim();
+    if (!status) return percent;
+    if (status.length > 18 || /^downloading\s+/i.test(status)) return percent;
+    return status;
   }
 
   function ModelPill({ state }) {
@@ -82,9 +101,9 @@
     }
 
     const pull = state.modelPull;
+    const modelCatalog = currentModelCatalog(state);
     const installed = new Set(state.installedModels || []);
 
-    // Normalise Ollama tag names — Ollama appends ":latest" to bare names.
     function isInstalled(tag) {
       if (!tag) return false;
       if (installed.has(tag)) return true;
@@ -107,7 +126,7 @@
       }
     }
 
-    const rows = PRESET_MODELS.map((preset) => {
+    const rows = modelCatalog.map((preset) => {
       const isSelected = state.selectedModel === preset.id;
       const isPulling = pull && !pull.done && pull.model === preset.id;
       const isInstd = preset.tag === null || isInstalled(preset.tag);
@@ -131,8 +150,8 @@
         isPulling
           ? h(
               "span",
-              { className: "model-row-right" },
-              h("span", { className: "model-pull-pct" }, pull.statusText || `${Math.round((pull.progress || 0) * 100)}%`),
+              { className: "model-row-right", title: pull.statusText || "" },
+              h("span", { className: "model-pull-pct" }, modelPullLabel(pull)),
               h("div", { className: "model-pull-bar" },
                 h("div", { className: "model-pull-fill", style: { width: `${(pull.progress || 0) * 100}%` } })
               )
@@ -148,7 +167,6 @@
             )
       );
     });
-
     // Portal: render the dropdown directly on document.body so it escapes
     // every stacking context (transforms, filters on shell/sticker/cards).
     const dropdown = open && dropRect
@@ -164,8 +182,8 @@
                 zIndex: 99999
               }
             },
-            state.ollamaAvailable === false
-              ? h("div", { className: "model-no-ollama" }, "Install Ollama to use local models")
+            state.localBackendAvailable === false
+              ? h("div", { className: "model-no-local" }, "Local backend not ready — llama-server will download on first model pull")
               : null,
             rows
           ),
@@ -186,7 +204,7 @@
           onClick: handleToggle
         },
         h("span", null, "model:"),
-        h("strong", null, modelShortLabel(state.selectedModel || "codex"))
+        h("strong", null, modelShortLabel(state.selectedModel || "codex", state))
       ),
       dropdown
     );
@@ -206,6 +224,12 @@
       .toLowerCase()
       .replace(/[^a-z0-9_-]+/g, "_")
       .replace(/^_+|_+$/g, "") || "note";
+  }
+
+  function cardHeaderSignature(items) {
+    return (items || [])
+      .map((item, index) => `${index}:${cleanType(item.type)}:${String(item.title || "").trim()}`)
+      .join("|");
   }
 
   function labelForView(state) {
@@ -230,14 +254,55 @@
     const showBack = state.view !== "history";
     const status = statusForState(state);
     const showStatus = false && status;
+    const [sleepFrame, setSleepFrame] = React.useState(0);
+
+    React.useEffect(() => {
+      if (state.isFocused) {
+        setSleepFrame(0);
+        return undefined;
+      }
+
+      let timeoutID = null;
+      let isActive = true;
+
+      function showFrame(frame) {
+        if (!isActive) return;
+        setSleepFrame(frame);
+        timeoutID = window.setTimeout(
+          () => showFrame(frame === 0 ? 1 : 0),
+          frame === 0 ? 2500 : 1000
+        );
+      }
+
+      showFrame(0);
+      return () => {
+        isActive = false;
+        if (timeoutID !== null) window.clearTimeout(timeoutID);
+      };
+    }, [state.isFocused]);
+
+    const stickerMode = state.isFocused ? "awake" : "sleep";
+    const stickerSrc = state.isFocused
+      ? "./miku.png"
+      : `./miku_sleep${sleepFrame + 1}.png`;
+    const stickerSize = state.isFocused
+      ? { width: 474, height: 441 }
+      : sleepFrame === 0
+      ? { width: 287, height: 248 }
+      : { width: 289, height: 257 };
 
     return h(
       "main",
-      { className: "stage" },
+      { className: `stage ${state.isFocused ? "is-focused" : "is-unfocused"}` },
       h("img", {
-        key: wiggleToken,
-        className: `sticker${wiggleToken > 0 ? " sticker-wiggle" : ""}`,
-        src: "./miku.png",
+        key: `${stickerMode}:${wiggleToken}`,
+        className: `sticker sticker-${stickerMode}${
+          state.isFocused ? "" : ` sticker-sleep-${sleepFrame + 1}`
+        }${wiggleToken > 0 ? " sticker-wiggle" : ""}`,
+        src: stickerSrc,
+        width: stickerSize.width,
+        height: stickerSize.height,
+        decoding: "async",
         alt: ""
       }),
       h(
@@ -264,10 +329,10 @@
             ),
             h("button", {
               type: "button",
-              className: `toggle${state.debugVisible ? " is-on" : ""}`,
+              className: `debug-pill${state.debugVisible ? " is-on" : ""}`,
               title: "Toggle debug",
               onClick: () => send("toggleDebug")
-            }),
+            }, "debug"),
             h(
               "button",
               {
@@ -300,13 +365,24 @@
               )
             )
           : null,
-        state.debugVisible ? h(DebugDrawer, { text: state.debug }) : null
+        state.debugVisible ? h(DebugDrawer, { text: state.debug }) : null,
+        state.toolMessage ? h("div", { className: "tool-toast" }, state.toolMessage) : null
       )
     );
   }
 
   function ResultCard({ item }) {
     const type = cleanType(item.type);
+    const [sent, setSent] = React.useState(false);
+    const tool = item.tool || null;
+    const toolLabel = tool && (tool.label || defaultToolLabel(tool.name));
+
+    function handleToolClick() {
+      if (!tool) return;
+      setSent(true);
+      send("executeTool", { tool });
+    }
+
     return h(
       "article",
       { className: `answer-card type-${type}` },
@@ -318,21 +394,42 @@
         h("p", null, item.body || ""),
         item.confidence
           ? h("div", { className: "confidence" }, `confidence ${item.confidence}`)
+          : null,
+        tool
+          ? h(
+              "button",
+              {
+                type: "button",
+                className: `tool-action${sent ? " is-sent" : ""}`,
+                onClick: handleToolClick,
+                disabled: sent,
+                title: toolLabel
+              },
+              sent ? "sent" : toolLabel
+            )
           : null
       )
     );
   }
 
+  function defaultToolLabel(name) {
+    if (name === "calendar.create_event") return "Add to Calendar";
+    if (name === "reminders.create_reminder") return "Add Reminder";
+    return "Accept";
+  }
+
   function ResultsPage({ state }) {
-    const items = state.items && state.items.length ? state.items : [EMPTY_ITEM];
+    const items = state.items || [];
     return h(
       "div",
       { className: "scroll result-scroll" },
-      h(
-        "div",
-        { className: "answer-stack" },
-        items.map((item, index) => h(ResultCard, { key: `${cleanType(item.type)}-${index}`, item }))
-      )
+      items.length
+        ? h(
+            "div",
+            { className: "answer-stack" },
+            items.map((item, index) => h(ResultCard, { key: `${cleanType(item.type)}-${index}`, item }))
+          )
+        : h("div", { className: "empty-state streaming-empty" }, "cards incoming...")
     );
   }
 
@@ -499,9 +596,8 @@
       }
 
       if (state.view === "result") {
-        trigger = `result:${state.title}:${(state.items || [])
-          .map((item) => `${item.type}:${item.title}:${item.body}`)
-          .join("|")}`;
+        const headerSignature = cardHeaderSignature(state.items || []);
+        trigger = headerSignature ? `result-cards:${headerSignature}` : "";
       }
 
       if (!trigger || trigger === lastWiggleTrigger.current) {

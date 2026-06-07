@@ -515,14 +515,16 @@ pub fn run() {
 
             // Tray menu.
             let explain = MenuItemBuilder::with_id("explain", "Explain Selection").build(app)?;
+            let history = MenuItemBuilder::with_id("history", "Past Summaries").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit Miku Explains").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&explain, &quit]).build()?;
+            let menu = MenuBuilder::new(app).items(&[&explain, &history, &quit]).build()?;
 
             let _tray = TrayIconBuilder::with_id("miku-tray")
                 .icon(app.default_window_icon().cloned().unwrap())
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "explain" => trigger_capture(app),
+                    "history" => show_history(app, None),
                     "quit" => app.exit(0),
                     _ => {}
                 })

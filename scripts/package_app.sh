@@ -44,9 +44,21 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Miku Explains needs Calendar access only when you accept an AI-suggested calendar action.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Miku Explains needs Calendar access only when you accept an AI-suggested calendar action.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>Miku Explains needs Reminders access only when you accept an AI-suggested reminder action.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Miku Explains needs Reminders access only when you accept an AI-suggested reminder action.</string>
 </dict>
 </plist>
 PLIST
+
+# Note: llama-server is downloaded at runtime into
+# ~/Library/Application Support/MikuExplains/Models/llama-server
+# on first local-model pull. No binary is bundled in the .app.
 
 codesign --force --deep --sign - "$APP_ROOT"
 

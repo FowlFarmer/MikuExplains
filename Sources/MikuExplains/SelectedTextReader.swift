@@ -26,6 +26,8 @@ enum CaptureSource: String {
 }
 
 final class SelectedTextReader {
+    private let pasteboardCopyTimeout: TimeInterval = 0.5
+
     func requestTrustIfNeeded() -> Bool {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
@@ -49,7 +51,7 @@ final class SelectedTextReader {
 
         sendCopyShortcut()
 
-        let deadline = Date().addingTimeInterval(1.0)
+        let deadline = Date().addingTimeInterval(pasteboardCopyTimeout)
         while pasteboard.changeCount == copyStartChangeCount && Date() < deadline {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
         }

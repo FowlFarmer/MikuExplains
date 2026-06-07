@@ -11,6 +11,7 @@ final class CollapseOverlayWindowController: NSWindowController {
     var onShortcutRecorded: ((ShortcutKeyboardEvent) -> Void)?
     var onSetModel: ((String) -> Void)?
     var onPullModel: ((String) -> Void)?
+    var onExecuteTool: ((AIResultTool) -> Void)?
     var onReady: (() -> Void)?
 
     init() {
@@ -32,6 +33,19 @@ final class CollapseOverlayWindowController: NSWindowController {
 
         super.init(window: window)
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelFocusChanged),
+            name: NSWindow.didBecomeKeyNotification,
+            object: window
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelFocusChanged),
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+
         contentView.onClose = { [weak self] in
             self?.hide()
         }
@@ -47,6 +61,9 @@ final class CollapseOverlayWindowController: NSWindowController {
         contentView.onPullModel = { [weak self] model in
             self?.onPullModel?(model)
         }
+        contentView.onExecuteTool = { [weak self] tool in
+            self?.onExecuteTool?(tool)
+        }
         contentView.onReady = { [weak self] in
             self?.onReady?()
         }
@@ -54,6 +71,10 @@ final class CollapseOverlayWindowController: NSWindowController {
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     func showLoading(title: String, debug: String, onBack: @escaping () -> Void) {
@@ -69,16 +90,37 @@ final class CollapseOverlayWindowController: NSWindowController {
         contentView.showWebSearchLoadingPhase()
     }
 
-    func showResult(title: String, intent: String, usedWebSearch: Bool, cards: [AIResultCard], debug: String, onBack: @escaping () -> Void) {
+    func showResult(
+        title: String,
+        intent: String,
+        usedWebSearch: Bool,
+        cards: [AIResultCard],
+        debug: String,
+        preserveExistingDebug: Bool = false,
+        onBack: @escaping () -> Void
+    ) {
         contentView.showResult(
             title: title,
             intent: intent,
             usedWebSearch: usedWebSearch,
             cards: cards,
             debug: debug,
+            preserveExistingDebug: preserveExistingDebug,
             onBack: onBack
         )
         showPanel()
+    }
+
+    func showStreamingResult(title: String, intent: String, cards: [AIResultCard], onBack: @escaping () -> Void) {
+        contentView.showStreamingResult(
+            title: title,
+            intent: intent,
+            cards: cards,
+            onBack: onBack
+        )
+        if window?.isVisible != true {
+            showPanel()
+        }
     }
 
     func showHistory(_ summaries: [SummaryRecord], debug: String?, onSelect: @escaping (SummaryRecord) -> Void) {
@@ -109,12 +151,26 @@ final class CollapseOverlayWindowController: NSWindowController {
         contentView.appendDebugLine(line)
     }
 
-    func sendModels(_ models: [String], selected: String, ollamaAvailable: Bool) {
-        contentView.sendModels(models, selected: selected, ollamaAvailable: ollamaAvailable)
+    func sendModels(
+        _ models: [String],
+        selected: String,
+        localBackendAvailable: Bool,
+        modelCatalog: [LlamaCppModelCatalogItem]
+    ) {
+        contentView.sendModels(
+            models,
+            selected: selected,
+            localBackendAvailable: localBackendAvailable,
+            modelCatalog: modelCatalog
+        )
     }
 
     func updateModelPull(model: String, progress: Double, done: Bool, error: String?, statusText: String? = nil) {
         contentView.updateModelPull(model: model, progress: progress, done: done, error: error, statusText: statusText)
+    }
+
+    func showToolMessage(_ message: String) {
+        contentView.showToolMessage(message)
     }
 
     var isPanelVisible: Bool {
@@ -122,7 +178,12 @@ final class CollapseOverlayWindowController: NSWindowController {
     }
 
     func hide() {
+        contentView.updateFocus(false)
         window?.orderOut(nil)
+    }
+
+    @objc private func panelFocusChanged(_ notification: Notification) {
+        contentView.updateFocus(window?.isKeyWindow ?? false)
     }
 
     private func showPanel() {
@@ -150,6 +211,8 @@ final class CollapseOverlayWindowController: NSWindowController {
                 window.animator().alphaValue = 1
             }
         }
+
+        contentView.updateFocus(window.isKeyWindow)
     }
 
     private static func preferredScreen() -> NSScreen? {
@@ -200,6 +263,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     var onRecordShortcut: ((ShortcutKeyboardEvent) -> Void)?
     var onSetModel: ((String) -> Void)?
     var onPullModel: ((String) -> Void)?
+    var onExecuteTool: ((AIResultTool) -> Void)?
     var onReady: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
@@ -233,6 +297,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
             subtitle: "Reading selection",
             loadingPhase: "local",
             debug: debug,
+            toolMessage: "",
             items: [],
             summaries: nil
         )
@@ -259,7 +324,15 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         }
     }
 
-    func showResult(title: String, intent: String, usedWebSearch: Bool, cards: [AIResultCard], debug: String, onBack: @escaping () -> Void) {
+    func showResult(
+        title: String,
+        intent: String,
+        usedWebSearch: Bool,
+        cards: [AIResultCard],
+        debug: String,
+        preserveExistingDebug: Bool = false,
+        onBack: @escaping () -> Void
+    ) {
         self.onBack = onBack
         state = state.replacing(
             view: "result",
@@ -267,7 +340,23 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
             status: usedWebSearch ? "web" : formattedIntent(intent),
             subtitle: "",
             loadingPhase: "local",
-            debug: debug,
+            debug: mergedDebug(existing: state.debug, with: debug, preserveExisting: preserveExistingDebug),
+            toolMessage: "",
+            items: cards.map(WebPanelItem.init(card:)),
+            summaries: nil
+        )
+        sendState()
+    }
+
+    func showStreamingResult(title: String, intent: String, cards: [AIResultCard], onBack: @escaping () -> Void) {
+        self.onBack = onBack
+        state = state.replacing(
+            view: "result",
+            title: title.isEmpty ? "Result" : title,
+            status: formattedIntent(intent),
+            subtitle: "",
+            loadingPhase: "local",
+            toolMessage: "",
             items: cards.map(WebPanelItem.init(card:)),
             summaries: nil
         )
@@ -285,6 +374,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
             subtitle: "Past things Miku explained",
             loadingPhase: "local",
             debug: debug ?? "History loaded from Application Support.",
+            toolMessage: "",
             items: [],
             summaries: summaries.map(WebPanelSummary.init(record:))
         )
@@ -300,6 +390,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
             subtitle: "",
             loadingPhase: "local",
             debug: "",
+            toolMessage: "",
             items: [
                 WebPanelItem(
                     type: "note",
@@ -352,17 +443,30 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     }
 
     func appendDebugLine(_ line: String) {
-        let existingText = state.debug.trimmingCharacters(in: .whitespacesAndNewlines)
-        let debug = existingText.isEmpty ? line : "\(existingText)\n\(line)"
-        state = state.replacing(debug: debug)
+        state = state.replacing(debug: mergedDebug(existing: state.debug, with: line, preserveExisting: true))
         sendState()
     }
 
-    func sendModels(_ models: [String], selected: String, ollamaAvailable: Bool) {
+    private func mergedDebug(existing: String, with line: String, preserveExisting: Bool) -> String {
+        guard preserveExisting else {
+            return line
+        }
+
+        let existingText = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+        return existingText.isEmpty ? line : "\(existingText)\n\(line)"
+    }
+
+    func sendModels(
+        _ models: [String],
+        selected: String,
+        localBackendAvailable: Bool,
+        modelCatalog: [LlamaCppModelCatalogItem]
+    ) {
         state = state.replacing(
             selectedModel: selected,
             installedModels: models,
-            ollamaAvailable: ollamaAvailable,
+            modelCatalog: modelCatalog.map(WebPanelModelPreset.init(item:)),
+            localBackendAvailable: localBackendAvailable,
             modelPull: state.modelPull?.done == false ? state.modelPull : nil
         )
         sendState()
@@ -372,6 +476,20 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         state = state.replacing(
             modelPull: WebPanelModelPull(model: model, progress: progress, done: done, error: error, statusText: statusText)
         )
+        sendState()
+    }
+
+    func showToolMessage(_ message: String) {
+        state = state.replacing(toolMessage: message)
+        sendState()
+    }
+
+    func updateFocus(_ isFocused: Bool) {
+        guard state.isFocused != isFocused else {
+            return
+        }
+
+        state = state.replacing(isFocused: isFocused)
         sendState()
     }
 
@@ -426,6 +544,12 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         case "pullModel":
             guard let model = body["model"] as? String else { return }
             onPullModel?(model)
+        case "executeTool":
+            guard let rawTool = body["tool"] as? [String: Any],
+                  let tool = decodeTool(from: rawTool) else {
+                return
+            }
+            onExecuteTool?(tool)
         default:
             break
         }
@@ -527,6 +651,14 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         webView.evaluateJavaScript(script)
     }
 
+    private func decodeTool(from rawTool: [String: Any]) -> AIResultTool? {
+        guard let data = try? JSONSerialization.data(withJSONObject: rawTool),
+              let decoded = try? JSONDecoder().decode(AIResultTool.self, from: data) else {
+            return nil
+        }
+        return decoded
+    }
+
     private func restoreStateBeforeShortcut() {
         guard let stateBeforeShortcut else {
             state = state.replacing(
@@ -577,12 +709,15 @@ private struct WebPanelState: Encodable {
     let debugVisible: Bool
     let shortcutLabel: String
     let shortcutError: String
+    let toolMessage: String
     let items: [WebPanelItem]
     let summaries: [WebPanelSummary]
     let selectedModel: String
     let installedModels: [String]
-    let ollamaAvailable: Bool
+    let modelCatalog: [WebPanelModelPreset]
+    let localBackendAvailable: Bool
     let modelPull: WebPanelModelPull?
+    let isFocused: Bool
 
     static let initial = WebPanelState(
         view: "message",
@@ -595,6 +730,7 @@ private struct WebPanelState: Encodable {
         debugVisible: false,
         shortcutLabel: HotKeyShortcut.default.displayName,
         shortcutError: "",
+        toolMessage: "",
         items: [
             WebPanelItem(
                 type: "note",
@@ -606,8 +742,10 @@ private struct WebPanelState: Encodable {
         summaries: [],
         selectedModel: "codex",
         installedModels: [],
-        ollamaAvailable: true,
-        modelPull: nil
+        modelCatalog: [],
+        localBackendAvailable: true,
+        modelPull: nil,
+        isFocused: false
     )
 
     func replacing(
@@ -621,12 +759,15 @@ private struct WebPanelState: Encodable {
         debugVisible: Bool? = nil,
         shortcutLabel: String? = nil,
         shortcutError: String? = nil,
+        toolMessage: String? = nil,
         items: [WebPanelItem]? = nil,
         summaries: [WebPanelSummary]? = nil,
         selectedModel: String? = nil,
         installedModels: [String]? = nil,
-        ollamaAvailable: Bool? = nil,
-        modelPull: WebPanelModelPull?? = nil
+        modelCatalog: [WebPanelModelPreset]? = nil,
+        localBackendAvailable: Bool? = nil,
+        modelPull: WebPanelModelPull?? = nil,
+        isFocused: Bool? = nil
     ) -> WebPanelState {
         WebPanelState(
             view: view ?? self.view,
@@ -639,12 +780,15 @@ private struct WebPanelState: Encodable {
             debugVisible: debugVisible ?? self.debugVisible,
             shortcutLabel: shortcutLabel ?? self.shortcutLabel,
             shortcutError: shortcutError ?? self.shortcutError,
+            toolMessage: toolMessage ?? self.toolMessage,
             items: items ?? self.items,
             summaries: summaries ?? self.summaries,
             selectedModel: selectedModel ?? self.selectedModel,
             installedModels: installedModels ?? self.installedModels,
-            ollamaAvailable: ollamaAvailable ?? self.ollamaAvailable,
-            modelPull: modelPull ?? self.modelPull
+            modelCatalog: modelCatalog ?? self.modelCatalog,
+            localBackendAvailable: localBackendAvailable ?? self.localBackendAvailable,
+            modelPull: modelPull ?? self.modelPull,
+            isFocused: isFocused ?? self.isFocused
         )
     }
 }
@@ -654,12 +798,14 @@ private struct WebPanelItem: Encodable {
     let title: String
     let body: String
     let confidence: String?
+    let tool: AIResultTool?
 
-    init(type: String, title: String, body: String, confidence: String?) {
+    init(type: String, title: String, body: String, confidence: String?, tool: AIResultTool? = nil) {
         self.type = type
         self.title = title
         self.body = body
         self.confidence = confidence
+        self.tool = tool
     }
 
     init(card: AIResultCard) {
@@ -667,6 +813,7 @@ private struct WebPanelItem: Encodable {
         title = card.title
         body = card.body
         confidence = card.confidence
+        tool = card.tool
     }
 }
 
@@ -694,6 +841,22 @@ private struct WebPanelModelPull: Encodable {
     let done: Bool
     let error: String?
     let statusText: String?
+}
+
+private struct WebPanelModelPreset: Encodable {
+    let id: String
+    let label: String
+    let tag: String
+    let size: String
+    let speed: String?
+
+    init(item: LlamaCppModelCatalogItem) {
+        id = item.id
+        label = item.label
+        tag = item.tag
+        size = item.size
+        speed = nil
+    }
 }
 
 enum StatusIconFactory {
