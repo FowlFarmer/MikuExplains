@@ -3,7 +3,8 @@
 set -euo pipefail
 
 APP="dist/Miku Explains.app"
-BUNDLE_ID="app.miku-explains.prototype"
+BUNDLE_ID="com.mikuexplains.app"
+LEGACY_BUNDLE_ID="app.miku-explains.prototype"
 APP_SUPPORT="${MIKU_APP_SUPPORT:-$HOME/Library/Application Support/MikuExplains}"
 LEGACY_APP_SUPPORT="${MIKU_LEGACY_APP_SUPPORT:-$HOME/Library/Application Support/Denebula}"
 MODELS_DIR="$APP_SUPPORT/Models"
@@ -79,9 +80,11 @@ remove_path "$LEGACY_APP_SUPPORT"
 
 echo "→ Resetting saved defaults..."
 defaults delete "$BUNDLE_ID" 2>/dev/null || true
+defaults delete "$LEGACY_BUNDLE_ID" 2>/dev/null || true
 
 echo "→ Resetting Accessibility permission..."
 tccutil reset Accessibility "$BUNDLE_ID" 2>/dev/null || true
+tccutil reset Accessibility "$LEGACY_BUNDLE_ID" 2>/dev/null || true
 
 echo "→ Building..."
 swift build

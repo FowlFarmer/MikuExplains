@@ -10,9 +10,11 @@ final class CollapseOverlayWindowController: NSWindowController {
     var onShortcutSettingsRequested: (() -> Void)?
     var onShortcutRecorded: ((ShortcutKeyboardEvent) -> Void)?
     var onSetModel: ((String) -> Void)?
+    var onSetGeminiAPIKey: ((String) -> Void)?
     var onPullModel: ((String) -> Void)?
     var onExecuteTool: ((AIResultTool) -> Void)?
     var onReady: (() -> Void)?
+    var onDismissGeminiKeyWarning: (() -> Void)?
 
     init() {
         let window = CollapsePanelWindow(
@@ -58,6 +60,9 @@ final class CollapseOverlayWindowController: NSWindowController {
         contentView.onSetModel = { [weak self] model in
             self?.onSetModel?(model)
         }
+        contentView.onSetGeminiAPIKey = { [weak self] apiKey in
+            self?.onSetGeminiAPIKey?(apiKey)
+        }
         contentView.onPullModel = { [weak self] model in
             self?.onPullModel?(model)
         }
@@ -66,6 +71,9 @@ final class CollapseOverlayWindowController: NSWindowController {
         }
         contentView.onReady = { [weak self] in
             self?.onReady?()
+        }
+        contentView.onDismissGeminiKeyWarning = { [weak self] in
+            self?.onDismissGeminiKeyWarning?()
         }
     }
 
@@ -123,6 +131,13 @@ final class CollapseOverlayWindowController: NSWindowController {
         }
     }
 
+    func showThinkingResult(onBack: @escaping () -> Void) {
+        contentView.showThinkingResult(onBack: onBack)
+        if window?.isVisible != true {
+            showPanel()
+        }
+    }
+
     func showHistory(_ summaries: [SummaryRecord], debug: String?, onSelect: @escaping (SummaryRecord) -> Void) {
         contentView.showHistory(summaries, debug: debug, onSelect: onSelect)
         showPanel()
@@ -155,13 +170,17 @@ final class CollapseOverlayWindowController: NSWindowController {
         _ models: [String],
         selected: String,
         localBackendAvailable: Bool,
-        modelCatalog: [LlamaCppModelCatalogItem]
+        modelCatalog: [LlamaCppModelCatalogItem],
+        geminiAPIKeyConfigured: Bool?,
+        geminiKeyWarning: Bool = false
     ) {
         contentView.sendModels(
             models,
             selected: selected,
             localBackendAvailable: localBackendAvailable,
-            modelCatalog: modelCatalog
+            modelCatalog: modelCatalog,
+            geminiAPIKeyConfigured: geminiAPIKeyConfigured,
+            geminiKeyWarning: geminiKeyWarning
         )
     }
 
@@ -262,9 +281,11 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     var onOpenShortcutSettings: (() -> Void)?
     var onRecordShortcut: ((ShortcutKeyboardEvent) -> Void)?
     var onSetModel: ((String) -> Void)?
+    var onSetGeminiAPIKey: ((String) -> Void)?
     var onPullModel: ((String) -> Void)?
     var onExecuteTool: ((AIResultTool) -> Void)?
     var onReady: (() -> Void)?
+    var onDismissGeminiKeyWarning: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         let contentController = WKUserContentController()
@@ -358,6 +379,21 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
             loadingPhase: "local",
             toolMessage: "",
             items: cards.map(WebPanelItem.init(card:)),
+            summaries: nil
+        )
+        sendState()
+    }
+
+    func showThinkingResult(onBack: @escaping () -> Void) {
+        self.onBack = onBack
+        state = state.replacing(
+            view: "result",
+            title: "Thinking",
+            status: "thinking",
+            subtitle: "what Miku is working through",
+            loadingPhase: "thinking",
+            toolMessage: "",
+            items: [],
             summaries: nil
         )
         sendState()
@@ -460,13 +496,17 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         _ models: [String],
         selected: String,
         localBackendAvailable: Bool,
-        modelCatalog: [LlamaCppModelCatalogItem]
+        modelCatalog: [LlamaCppModelCatalogItem],
+        geminiAPIKeyConfigured: Bool?,
+        geminiKeyWarning: Bool = false
     ) {
         state = state.replacing(
             selectedModel: selected,
             installedModels: models,
             modelCatalog: modelCatalog.map(WebPanelModelPreset.init(item:)),
             localBackendAvailable: localBackendAvailable,
+            geminiAPIKeyConfigured: geminiAPIKeyConfigured,
+            geminiKeyWarning: geminiKeyWarning,
             modelPull: state.modelPull?.done == false ? state.modelPull : nil
         )
         sendState()
@@ -541,9 +581,22 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         case "setModel":
             guard let model = body["model"] as? String else { return }
             onSetModel?(model)
+        case "setGeminiAPIKey":
+            guard let apiKey = body["apiKey"] as? String else { return }
+            onSetGeminiAPIKey?(apiKey)
+        case "pasteGeminiAPIKey":
+            guard let apiKey = NSPasteboard.general.string(forType: .string)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                apiKey.isEmpty == false else {
+                showToolMessage("Clipboard has no API key text.")
+                return
+            }
+            onSetGeminiAPIKey?(apiKey)
         case "pullModel":
             guard let model = body["model"] as? String else { return }
             onPullModel?(model)
+        case "dismissGeminiKeyWarning":
+            onDismissGeminiKeyWarning?()
         case "executeTool":
             guard let rawTool = body["tool"] as? [String: Any],
                   let tool = decodeTool(from: rawTool) else {
@@ -716,6 +769,8 @@ private struct WebPanelState: Encodable {
     let installedModels: [String]
     let modelCatalog: [WebPanelModelPreset]
     let localBackendAvailable: Bool
+    let geminiAPIKeyConfigured: Bool?
+    let geminiKeyWarning: Bool
     let modelPull: WebPanelModelPull?
     let isFocused: Bool
 
@@ -744,6 +799,8 @@ private struct WebPanelState: Encodable {
         installedModels: [],
         modelCatalog: [],
         localBackendAvailable: true,
+        geminiAPIKeyConfigured: false,
+        geminiKeyWarning: false,
         modelPull: nil,
         isFocused: false
     )
@@ -766,6 +823,8 @@ private struct WebPanelState: Encodable {
         installedModels: [String]? = nil,
         modelCatalog: [WebPanelModelPreset]? = nil,
         localBackendAvailable: Bool? = nil,
+        geminiAPIKeyConfigured: Bool? = nil,
+        geminiKeyWarning: Bool? = nil,
         modelPull: WebPanelModelPull?? = nil,
         isFocused: Bool? = nil
     ) -> WebPanelState {
@@ -787,6 +846,8 @@ private struct WebPanelState: Encodable {
             installedModels: installedModels ?? self.installedModels,
             modelCatalog: modelCatalog ?? self.modelCatalog,
             localBackendAvailable: localBackendAvailable ?? self.localBackendAvailable,
+            geminiAPIKeyConfigured: geminiAPIKeyConfigured ?? self.geminiAPIKeyConfigured,
+            geminiKeyWarning: geminiKeyWarning ?? self.geminiKeyWarning,
             modelPull: modelPull ?? self.modelPull,
             isFocused: isFocused ?? self.isFocused
         )

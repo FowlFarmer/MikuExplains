@@ -127,9 +127,6 @@ button:focus-visible {
 
 .stage.is-unfocused .answer-card {
   filter: saturate(0.78) brightness(0.985);
-  box-shadow:
-    1px 3px 0 rgba(14, 43, 49, 0.035),
-    -1px 1px 0 rgba(255, 255, 255, 0.56);
 }
 
 .sticker {
@@ -261,6 +258,7 @@ button:focus-visible {
   gap: 8px;
   height: 24px;
   min-width: 0;
+  justify-content: flex-end;
 }
 
 .toolbar-pad {
@@ -268,7 +266,7 @@ button:focus-visible {
 }
 
 .toolbar-fill {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 8px;
 }
 
@@ -525,13 +523,50 @@ button:focus-visible {
   --card-border: rgba(15, 198, 207, 0.46);
   --card-accent: #0fc6cf;
   --card-title: #08717b;
+  --paper-polygon: polygon(0 7px, calc(100% - 8px) 0, 100% calc(100% - 7px), 7px 100%, 0 7px);
+  --outline-polygon: polygon(1px 8px, calc(100% - 10px) 1px, calc(100% - 1px) calc(100% - 8px), 9px calc(100% - 1px), 1px 8px);
+  --rail-polygon: polygon(0 0, 100% 5px, calc(100% - 1px) 100%, 0 calc(100% - 7px));
   position: relative;
   display: block;
+  isolation: isolate;
   min-width: 0;
   overflow: visible;
   border: 0;
-  border-radius: 12px 19px 10px 23px / 15px 11px 21px 13px;
   padding: 16px 17px 15px 20px;
+  background: transparent;
+  transform: none;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.78, 0.24, 1),
+    filter 180ms ease;
+}
+
+.answer-card:nth-child(2n) {
+  --paper-polygon: polygon(4px 0, 100% 6px, calc(100% - 7px) 100%, 0 calc(100% - 5px), 4px 0);
+  --outline-polygon: polygon(6px 1px, calc(100% - 2px) 7px, calc(100% - 9px) calc(100% - 1px), 1px calc(100% - 6px), 6px 1px);
+  --rail-polygon: polygon(1px 5px, 100% 0, 100% calc(100% - 6px), 0 100%);
+}
+
+.answer-card:nth-child(3n) {
+  --paper-polygon: polygon(0 5px, calc(100% - 4px) 0, 100% 100%, 8px calc(100% - 3px), 0 5px);
+  --outline-polygon: polygon(2px 6px, calc(100% - 7px) 1px, calc(100% - 1px) calc(100% - 4px), 10px calc(100% - 4px), 2px 6px);
+  --rail-polygon: polygon(0 2px, calc(100% - 1px) 0, 100% 100%, 1px calc(100% - 4px));
+}
+
+.answer-card:hover {
+  filter: saturate(1.03);
+  transform: translateY(-2px);
+}
+
+.answer-paper,
+.answer-outline,
+.answer-tape {
+  position: absolute;
+  pointer-events: none;
+}
+
+.answer-paper {
+  inset: 0;
+  z-index: 0;
   background:
     linear-gradient(92deg, rgba(255, 255, 255, 0.2), transparent 34%),
     repeating-linear-gradient(
@@ -542,66 +577,37 @@ button:focus-visible {
       transparent 12px
     ),
     var(--card-bg);
-  box-shadow:
-    2px 5px 0 rgba(14, 43, 49, 0.055),
-    -1px 1px 0 rgba(255, 255, 255, 0.72);
-  transform: rotate(-0.45deg);
-  transition:
-    transform 180ms cubic-bezier(0.2, 0.78, 0.24, 1),
-    box-shadow 180ms ease,
-    filter 180ms ease;
+  clip-path: var(--paper-polygon);
+  filter:
+    drop-shadow(2px 5px 0 rgba(14, 43, 49, 0.055))
+    drop-shadow(-1px 1px 0 rgba(255, 255, 255, 0.72));
+  transition: filter 180ms ease;
 }
 
-.answer-card:nth-child(2n) {
-  border-radius: 20px 11px 24px 9px / 12px 22px 10px 18px;
-  transform: rotate(0.38deg);
+.answer-card:hover .answer-paper {
+  filter:
+    drop-shadow(3px 8px 0 rgba(14, 43, 49, 0.05))
+    drop-shadow(-1px 1px 0 rgba(255, 255, 255, 0.82));
 }
 
-.answer-card:nth-child(3n) {
-  border-radius: 9px 23px 13px 17px / 20px 12px 19px 10px;
-  transform: rotate(-0.18deg);
+.answer-outline {
+  inset: 4px 5px 5px 4px;
+  z-index: 1;
+  padding: 2px;
+  background: var(--card-border);
+  clip-path: var(--outline-polygon);
+  opacity: 0.96;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
 }
 
-.answer-card:hover {
-  box-shadow:
-    3px 8px 0 rgba(14, 43, 49, 0.05),
-    -1px 1px 0 rgba(255, 255, 255, 0.82);
-  filter: saturate(1.03);
-  transform: translateY(-2px) rotate(-0.7deg);
-}
-
-.answer-card:nth-child(2n):hover {
-  transform: translateY(-2px) rotate(0.64deg);
-}
-
-.answer-card:nth-child(3n):hover {
-  transform: translateY(-2px) rotate(-0.34deg);
-}
-
-.answer-card::before {
-  content: "";
-  position: absolute;
-  inset: 3px 4px 4px 3px;
-  z-index: 0;
-  border: 2px solid var(--card-border);
-  border-radius: 16px 12px 18px 9px / 11px 17px 10px 19px;
-  pointer-events: none;
-  transform: rotate(-0.35deg);
-}
-
-.answer-card:nth-child(2n)::before {
-  inset: 4px 3px 3px 5px;
-  border-radius: 10px 20px 8px 18px / 18px 10px 16px 12px;
-  transform: rotate(0.42deg);
-}
-
-.answer-card::after {
-  content: "";
-  position: absolute;
+.answer-tape {
   top: -6px;
-  left: auto;
   right: 34px;
-  z-index: 2;
+  z-index: 4;
   width: 58px;
   height: 13px;
   background:
@@ -616,13 +622,17 @@ button:focus-visible {
   border: 1px solid rgba(167, 134, 56, 0.14);
   border-radius: 3px 5px 4px 2px / 4px 2px 5px 3px;
   transform: rotate(2.4deg);
-  pointer-events: none;
 }
 
-.answer-card:nth-child(2n)::after {
+.answer-card:nth-child(2n) .answer-tape {
   left: 24px;
   right: auto;
   transform: rotate(-2deg);
+}
+
+.answer-card:nth-child(3n) .answer-tape {
+  right: 42px;
+  transform: rotate(1.3deg);
 }
 
 .answer-chrome {
@@ -630,13 +640,12 @@ button:focus-visible {
   left: 11px;
   top: 20px;
   bottom: 16px;
-  z-index: 1;
+  z-index: 2;
   width: 4px;
   min-height: 30px;
-  border-radius: 4px 2px 5px 1px / 7px 4px 5px 3px;
   background: var(--card-accent);
+  clip-path: var(--rail-polygon);
   opacity: 0.78;
-  transform: rotate(1.2deg);
 }
 
 .answer-chrome::before,
@@ -646,24 +655,25 @@ button:focus-visible {
   left: 1px;
   width: 3px;
   background: var(--card-accent);
+  clip-path: var(--rail-polygon);
   opacity: 0.52;
 }
 
 .answer-chrome::before {
   top: 8px;
   height: 24px;
-  transform: translateX(3px) rotate(-6deg);
+  transform: translateX(3px);
 }
 
 .answer-chrome::after {
   bottom: 7px;
   height: 18px;
-  transform: translateX(-2px) rotate(7deg);
+  transform: translateX(-2px);
 }
 
 .answer-content {
   position: relative;
-  z-index: 1;
+  z-index: 3;
   min-width: 0;
   padding-left: 10px;
 }
@@ -857,6 +867,37 @@ button:focus-visible {
   font-weight: 780;
 }
 
+.inference-status {
+  display: inline-flex;
+  align-items: baseline;
+  padding-top: 28px;
+  padding-left: 3px;
+  color: var(--miku-deep);
+  font-family: "Marker Felt", "Noteworthy", "Chalkboard SE", ui-rounded, system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  transform: rotate(-0.35deg);
+}
+
+.inference-status::before {
+  content: "";
+  width: 26px;
+  height: 2px;
+  margin-right: 8px;
+  border-radius: 999px;
+  background: rgba(255, 120, 174, 0.5);
+  transform: translateY(-4px) rotate(-2deg);
+}
+
+.inference-dots {
+  display: inline-block;
+  width: 22px;
+  color: var(--pink-deep);
+  text-align: left;
+}
+
 .shortcut-page {
   height: 100%;
   display: grid;
@@ -990,16 +1031,21 @@ button:focus-visible {
 
 .model-pill-wrap {
   position: relative;
-  flex: 0 1 auto;
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: flex-end;
   min-width: 0;
+  margin-right: 2px;
   z-index: 100;
 }
 
 .model-pill {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
-  max-width: 140px;
+  max-width: min(188px, 100%);
   height: 22px;
   min-width: 0;
   overflow: hidden;
@@ -1026,6 +1072,7 @@ button:focus-visible {
 .model-pill strong {
   color: #2a1a6e;
   font-weight: 950;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1204,6 +1251,84 @@ button:focus-visible {
   margin-bottom: 4px;
 }
 
+.gemini-key-form {
+  margin: 6px 10px 4px;
+  padding: 7px 0 2px;
+  border-top: 1px dashed rgba(169, 149, 255, 0.28);
+}
+
+.gemini-key-label {
+  margin: 0 4px 5px;
+  color: #8070c0;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: lowercase;
+}
+
+.gemini-key-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.gemini-key-input {
+  flex: 1 1 auto;
+  min-width: 92px;
+  height: 25px;
+  padding: 3px 8px;
+  border: 1px dashed rgba(82, 198, 204, 0.58);
+  border-radius: 8px 7px 9px 6px / 6px 9px 7px 8px;
+  background: rgba(255, 255, 255, 0.66);
+  color: #2a1a6e;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 760;
+  outline: none;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    transform 140ms ease;
+}
+
+.gemini-key-input:focus {
+  border-color: rgba(255, 120, 174, 0.72);
+  background: rgba(255, 255, 255, 0.88);
+  transform: translateY(-1px);
+}
+
+.gemini-key-button {
+  flex: 0 0 auto;
+  height: 25px;
+  padding: 2px 7px;
+  border: 1px dashed rgba(169, 149, 255, 0.52);
+  border-radius: 7px 9px 6px 8px / 8px 6px 9px 7px;
+  background: rgba(255, 245, 252, 0.78);
+  color: #6a50d8;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: default;
+  transition:
+    transform 130ms ease,
+    background-color 130ms ease,
+    color 130ms ease;
+}
+
+.gemini-key-button:hover {
+  background: rgba(255, 220, 241, 0.86);
+  color: var(--pink-deep);
+  transform: translateY(-1px) rotate(-0.4deg);
+}
+
+.gemini-key-button:active {
+  transform: translateY(1px) rotate(0.2deg);
+}
+
+.gemini-key-button.is-clear {
+  color: #8070c0;
+}
+
 @keyframes dropdown-pop {
   0% {
     opacity: 0;
@@ -1256,5 +1381,125 @@ button:focus-visible {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 1ms !important;
+  }
+}
+
+/* ── Apollo key warning (first Gemma pick) ─────────────────────── */
+
+.apollo-key-warning {
+  position: relative;
+  margin: 8px 6px 4px;
+  padding: 9px 10px 8px 12px;
+  border: 1.5px solid #d7263d;
+  border-radius: 9px 13px 7px 12px / 11px 7px 13px 9px;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 240, 244, 0.94) 0 6px,
+      rgba(255, 232, 240, 0.94) 6px 12px
+    );
+  color: #8a0d22;
+  font-family: "Bradley Hand", "Marker Felt", "Comic Sans MS", "Segoe Print", cursive, system-ui;
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.6),
+    2px 3px 0 rgba(138, 13, 34, 0.16);
+  transform: rotate(-0.65deg);
+  transform-origin: 30% 50%;
+  animation: apollo-warning-wobble 2.4s ease-in-out infinite;
+}
+
+.apollo-key-warning::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #d7263d 0%, #b91c2c 100%);
+  box-shadow: 0 0 4px rgba(215, 38, 61, 0.45);
+}
+
+.apollo-key-warning-head {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 6px;
+  border: 1.2px solid #d7263d;
+  border-radius: 6px 4px 7px 5px / 5px 7px 4px 6px;
+  background: #fff0f2;
+  color: #b91c2c;
+  font-size: 10.5px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.apollo-key-warning p {
+  margin: 2px 0 0;
+  color: #8a0d22;
+  font-size: 11.5px;
+  font-weight: 800;
+  text-shadow: 0 0 0 transparent;
+}
+
+.apollo-key-warning p + p {
+  margin-top: 2px;
+}
+
+.apollo-key-warning strong {
+  color: #b91c2c;
+  font-weight: 950;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 0 3px;
+  border-radius: 3px;
+  border: 1px dashed rgba(215, 38, 61, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10.5px;
+}
+
+.apollo-key-warning-dismiss {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  padding: 2px 9px;
+  border: 1.5px dashed #d7263d;
+  border-radius: 7px 5px 9px 6px / 5px 9px 6px 7px;
+  background: #fff5f7;
+  color: #b91c2c;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 900;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  cursor: default;
+  transition: transform 130ms ease, background-color 130ms ease;
+}
+
+.apollo-key-warning-dismiss:hover {
+  background: #ffe0e6;
+  transform: translateY(-1px) rotate(0.4deg);
+}
+
+.apollo-key-warning-dismiss:active {
+  transform: translateY(1px) rotate(-0.2deg);
+}
+
+@keyframes apollo-warning-wobble {
+  0%, 100% {
+    transform: rotate(-0.65deg);
+  }
+  50% {
+    transform: rotate(-0.25deg) translateY(-1px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .apollo-key-warning {
+    animation: none;
   }
 }

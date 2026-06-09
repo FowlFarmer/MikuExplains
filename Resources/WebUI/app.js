@@ -26,6 +26,8 @@
     installedModels: [],
     modelCatalog: [],
     localBackendAvailable: true,
+    geminiAPIKeyConfigured: null,
+    geminiKeyWarning: false,
     modelPull: null,
     isFocused: false
   };
@@ -54,6 +56,10 @@
     { id: "mistral:7b",   label: "Mistral 7B",  tag: "mistral:7b",   size: "4.5 GB", speed: "~50 t/s" },
   ];
 
+  const GEMMA_API_MODELS = [
+    { id: "google:gemma-4-26b-a4b-it",   label: "Gemma 4 MoE",  tag: null, provider: "google", size: null, speed: "api" },
+  ];
+
   function modelShortLabel(modelId, state) {
     const catalog = currentModelCatalog(state || initialState);
     const found = catalog.find((m) => m.id === modelId);
@@ -66,7 +72,7 @@
     const localCatalog = Array.isArray(state.modelCatalog) && state.modelCatalog.length
       ? state.modelCatalog
       : PRESET_MODELS.filter((model) => model.id !== "codex");
-    return [PRESET_MODELS[0]].concat(localCatalog);
+    return [PRESET_MODELS[0]].concat(localCatalog, GEMMA_API_MODELS);
   }
 
   function modelPullLabel(pull) {
@@ -79,8 +85,27 @@
 
   function ModelPill({ state }) {
     const [open, setOpen] = React.useState(false);
+    const [apiKeyDraft, setApiKeyDraft] = React.useState("");
+    const [warningDismissed, setWarningDismissed] = React.useState(false);
+    const apiInputRef = React.useRef(null);
     const btnRef = React.useRef(null);
     const [dropRect, setDropRect] = React.useState(null);
+
+    const geminiConfigured = state.geminiAPIKeyConfigured === true;
+
+    React.useEffect(() => {
+      // React acknowledges a warning when the user switches off the
+      // hosted Gemma row, so the next Gemma pick can show it again.
+      if (!String(state.selectedModel || "").startsWith("google:")) {
+        setWarningDismissed(false);
+      }
+    }, [state.selectedModel]);
+
+    React.useEffect(() => {
+      if (geminiConfigured) {
+        setWarningDismissed(false);
+      }
+    }, [geminiConfigured]);
 
     React.useEffect(() => {
       if (!open) return;
@@ -117,6 +142,13 @@
         setOpen(false);
         return;
       }
+      if (preset.provider === "google") {
+        send("setModel", { model: preset.id });
+        if (geminiConfigured) {
+          setOpen(false);
+        }
+        return;
+      }
       if (isInstalled(preset.tag)) {
         send("setModel", { model: preset.id });
         setOpen(false);
@@ -126,10 +158,22 @@
       }
     }
 
+    function dismissWarning() {
+      setWarningDismissed(true);
+      send("dismissGeminiKeyWarning");
+    }
+
+    const showWarning = open
+      && !geminiConfigured
+      && state.geminiKeyWarning
+      && !warningDismissed
+      && String(state.selectedModel || "").startsWith("google:");
+
     const rows = modelCatalog.map((preset) => {
       const isSelected = state.selectedModel === preset.id;
       const isPulling = pull && !pull.done && pull.model === preset.id;
-      const isInstd = preset.tag === null || isInstalled(preset.tag);
+      const isHosted = preset.provider === "google";
+      const isInstd = preset.tag === null || isInstalled(preset.tag) || isHosted;
       const pullFailed = pull && pull.done && pull.error && pull.model === preset.id;
 
       return h(
@@ -158,6 +202,8 @@
             )
           : pullFailed
           ? h("span", { className: "model-row-error" }, "failed")
+          : isHosted && !geminiConfigured
+          ? h("span", { className: "model-row-error" }, "needs key")
           : isInstd
           ? h("span", { className: "model-row-speed" }, preset.speed || "")
           : h(
@@ -167,6 +213,7 @@
             )
       );
     });
+    const showGeminiKeyForm = String(state.selectedModel || "").startsWith("google:");
     // Portal: render the dropdown directly on document.body so it escapes
     // every stacking context (transforms, filters on shell/sticker/cards).
     const dropdown = open && dropRect
@@ -185,7 +232,65 @@
             state.localBackendAvailable === false
               ? h("div", { className: "model-no-local" }, "Local backend not ready — llama-server will download on first model pull")
               : null,
-            rows
+            rows,
+            showGeminiKeyForm ? h(
+              "form",
+              {
+                className: "gemini-key-form",
+                onSubmit: (event) => {
+                  event.preventDefault();
+                  const apiKey = (apiInputRef.current?.value || apiKeyDraft || "").trim();
+                  if (!apiKey) return;
+                  send("setGeminiAPIKey", { apiKey });
+                  setApiKeyDraft("");
+                  if (apiInputRef.current) {
+                    apiInputRef.current.value = "";
+                  }
+                  setWarningDismissed(true);
+                }
+              },
+              h("div", { className: "gemini-key-label" }, geminiConfigured ? "Gemini key saved" : "Gemini key required"),
+              h("div", { className: "gemini-key-row" },
+                h("input", {
+                  className: "gemini-key-input",
+                  type: "password",
+                  ref: apiInputRef,
+                  autoComplete: "off",
+                  spellCheck: false,
+                  value: apiKeyDraft,
+                  placeholder: geminiConfigured ? "Replace key" : "Paste API key",
+                  onChange: (event) => setApiKeyDraft(event.target.value),
+                  onInput: (event) => setApiKeyDraft(event.target.value),
+                  onKeyDown: (event) => {
+                    if ((event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === "v") {
+                      event.preventDefault();
+                      send("pasteGeminiAPIKey");
+                      setApiKeyDraft("");
+                    }
+                  }
+                }),
+                h("button", { className: "gemini-key-button", type: "submit" }, "save"),
+                h("button", {
+                  className: "gemini-key-button",
+                  type: "button",
+                  onClick: () => {
+                    send("pasteGeminiAPIKey");
+                    setApiKeyDraft("");
+                  }
+                }, "paste"),
+                geminiConfigured
+                  ? h("button", {
+                      className: "gemini-key-button is-clear",
+                      type: "button",
+                      onClick: () => {
+                        send("setGeminiAPIKey", { apiKey: "" });
+                        setApiKeyDraft("");
+                      }
+                    }, "clear")
+                  : null
+              ),
+              showWarning ? h(ApolloKeyWarning, { onDismiss: dismissWarning }) : null
+            ) : null
           ),
           document.body
         )
@@ -207,6 +312,23 @@
         h("strong", null, modelShortLabel(state.selectedModel || "codex", state))
       ),
       dropdown
+    );
+  }
+
+  function ApolloKeyWarning({ onDismiss }) {
+    return h(
+      "div",
+      { className: "apollo-key-warning", role: "status" },
+      h("div", { className: "apollo-key-warning-note" },
+        h("span", { className: "apollo-key-warning-head" }, "heads up!"),
+        h("p", null, "This key is saved to your macOS Keychain."),
+        h("p", null, "When the system asks, press ", h("strong", null, "Always Allow"), " so Miku can read it later without re-asking you.")
+      ),
+      h("button", {
+        type: "button",
+        className: "apollo-key-warning-dismiss",
+        onClick: onDismiss
+      }, "got it")
     );
   }
 
@@ -386,6 +508,9 @@
     return h(
       "article",
       { className: `answer-card type-${type}` },
+      h("div", { className: "answer-paper" }),
+      h("div", { className: "answer-outline" }),
+      h("div", { className: "answer-tape" }),
       h("div", { className: "answer-chrome" }),
       h(
         "div",
@@ -420,6 +545,8 @@
 
   function ResultsPage({ state }) {
     const items = state.items || [];
+    const isThinking = state.loadingPhase === "thinking" || state.status === "thinking";
+
     return h(
       "div",
       { className: "scroll result-scroll" },
@@ -429,7 +556,28 @@
             { className: "answer-stack" },
             items.map((item, index) => h(ResultCard, { key: `${cleanType(item.type)}-${index}`, item }))
           )
-        : h("div", { className: "empty-state streaming-empty" }, "cards incoming...")
+        : h(InferenceStatus, { mode: isThinking ? "thinking" : "parsing" })
+    );
+  }
+
+  function InferenceStatus({ mode }) {
+    const [dotIndex, setDotIndex] = React.useState(0);
+
+    React.useEffect(() => {
+      const interval = window.setInterval(() => {
+        setDotIndex((value) => (value + 1) % 3);
+      }, 430);
+      return () => window.clearInterval(interval);
+    }, []);
+
+    const label = "Thinking";
+    const dots = [".", "..", "..."][dotIndex];
+
+    return h(
+      "div",
+      { className: `inference-status is-${mode || "thinking"}` },
+      h("span", { className: "inference-status-label" }, label),
+      h("span", { className: "inference-dots", "aria-hidden": "true" }, dots)
     );
   }
 
@@ -504,6 +652,18 @@
   }
 
   function LoadingPage({ state }) {
+    if (state.loadingPhase === "thinking") {
+      return h(
+        "div",
+        { className: "scroll result-scroll" },
+        h(InferenceStatus, { mode: "thinking" })
+      );
+    }
+
+    return h(LoadingMeterPage, { state });
+  }
+
+  function LoadingMeterPage({ state }) {
     const phase = state.loadingPhase === "web" ? "web" : "local";
     const [progress, setProgress] = React.useState(0);
 

@@ -18,15 +18,15 @@ enum CodexSummarizerError: LocalizedError {
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             let snippet = trimmed.isEmpty ? "(no output)" : String(trimmed.prefix(200))
             if status == 0 {
-                return "Codex error: \(snippet)"
+                return "AI backend error: \(snippet)"
             }
-            return "Codex exited with status \(status): \(snippet)"
+            return "AI backend failed with status \(status): \(snippet)"
         case .unreadableOutput(let message):
             return "Could not read Codex output: \(message)"
         case .invalidOutput(let output):
             return "The AI backend returned an invalid result format: \(output)"
         case .saveFailed(let message):
-            return "Could not save Codex result: \(message)"
+            return "Could not save AI result: \(message)"
         }
     }
 }

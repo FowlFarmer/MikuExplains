@@ -84,6 +84,7 @@ final class LlamaCppSummarizer: @unchecked Sendable, InferenceBackend {
             callbacks: InferenceBackendCallbacks(
                 onProcessStarted: onProcessStarted,
                 onWebSearchStarted: onWebSearchStarted,
+                onThinkingStarted: {},
                 onDebug: { _ in },
                 onPartialResult: { _ in }
             ),

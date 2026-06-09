@@ -25,7 +25,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key>
     <string>MikuExplains</string>
     <key>CFBundleIdentifier</key>
-    <string>app.miku-explains.prototype</string>
+    <string>com.mikuexplains.app</string>
     <key>CFBundleName</key>
     <string>Miku Explains</string>
     <key>CFBundleDisplayName</key>

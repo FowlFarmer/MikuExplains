@@ -73,6 +73,30 @@ enum InferencePromptBuilder {
             - "label": "Add to Calendar" or "Add Reminder".
             - "params": object with concrete strings for title, start/due, optional end, and optional notes.
             """
+        case .geminiAPI:
+            itemTypes = "definition, translation, summary, core_point, assumptions, validity, actions, reply_draft, code_help, numerical_sanity, glossary, contrarian, note"
+            backendRules = """
+            - This app is using hosted Gemma 4 through Google's Gemini API.
+            - Do not claim to run live web search, browser lookup, or citation retrieval.
+            - Return one array only: items. Do not emit card_headers, card_plan, cards, or any duplicate header array.
+            """
+            allowedTopLevelKeys = "tagline, primary_intent, intent_confidence, and items"
+            jsonShape = """
+            {
+              "tagline": "Actual short label",
+              "primary_intent": "summary",
+              "intent_confidence": "medium",
+              "items": [
+                {
+                  "id": "card_1",
+                  "type": "summary",
+                  "title": "What matters",
+                  "body": "Card body text.",
+                  "confidence": "medium"
+                }
+              ]
+            }
+            """
         }
 
         return """
@@ -182,6 +206,7 @@ private func currentDateHint() -> String {
 enum LocalInferenceBackendKind {
     case codex
     case llamaCpp
+    case geminiAPI
 }
 
 private struct TextInferenceHints {

@@ -3,6 +3,7 @@ import Foundation
 struct InferenceBackendCallbacks {
     let onProcessStarted: @MainActor @Sendable (Int32) -> Void
     let onWebSearchStarted: @MainActor @Sendable () -> Void
+    let onThinkingStarted: @MainActor @Sendable () -> Void
     let onDebug: @MainActor @Sendable (String) -> Void
     let onPartialResult: @MainActor @Sendable (StreamingResultSnapshot) -> Void
 }
@@ -26,14 +27,22 @@ protocol InferenceBackend: AnyObject {
 final class InferenceBackendRouter: @unchecked Sendable {
     private let codexBackend: InferenceBackend
     private let llamaCppBackend: InferenceBackend
+    private let geminiBackend: InferenceBackend
 
-    init(codexBackend: InferenceBackend, llamaCppBackend: InferenceBackend) {
+    init(codexBackend: InferenceBackend, llamaCppBackend: InferenceBackend, geminiBackend: InferenceBackend) {
         self.codexBackend = codexBackend
         self.llamaCppBackend = llamaCppBackend
+        self.geminiBackend = geminiBackend
     }
 
     func backend(for model: String) -> InferenceBackend {
-        model == "codex" ? codexBackend : llamaCppBackend
+        if model == "codex" {
+            return codexBackend
+        }
+        if GeminiAPIModelRegistry.isGemmaAPIModel(model) {
+            return geminiBackend
+        }
+        return llamaCppBackend
     }
 }
 

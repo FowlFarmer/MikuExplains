@@ -5,6 +5,7 @@ struct SummaryPipelineEvents {
     var debug: (String) -> Void
     var savedCapture: (CaptureRecord) -> Void
     var webSearchStarted: () -> Void
+    var thinkingStarted: () -> Void
     var partialResult: (StreamingResultSnapshot) -> Void
     var completed: (SummaryRecord, String) -> Void
     var failed: (CodexSummarizerError, String) -> Void
@@ -83,6 +84,9 @@ final class SummaryPipeline {
                     onWebSearchStarted: {
                         events.webSearchStarted()
                         events.debug("Entering web search verification phase...")
+                    },
+                    onThinkingStarted: {
+                        events.thinkingStarted()
                     },
                     onDebug: { message in
                         events.debug(message)
