@@ -39,7 +39,7 @@ final class InferenceBackendRouter: @unchecked Sendable {
         if model == "codex" {
             return codexBackend
         }
-        if GeminiAPIModelRegistry.isGemmaAPIModel(model) {
+        if GeminiAPIModelRegistry.isHostedGeminiAPIModel(model) {
             return geminiBackend
         }
         return llamaCppBackend

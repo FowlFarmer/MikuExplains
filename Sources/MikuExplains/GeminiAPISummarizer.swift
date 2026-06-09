@@ -3,13 +3,20 @@ import Foundation
 struct GeminiAPIModelInfo {
     let apiModel: String
     let displayName: String
+    let supportsExplicitContextCaching: Bool
 }
 
 enum GeminiAPIModelRegistry {
     static let modelRegistry: [String: GeminiAPIModelInfo] = [
         "google:gemma-4-26b-a4b-it": .init(
             apiModel: "gemma-4-26b-a4b-it",
-            displayName: "Gemma 4 MoE"
+            displayName: "Gemma 4 MoE",
+            supportsExplicitContextCaching: false
+        ),
+        "google:gemini-3.1-flash-lite": .init(
+            apiModel: "gemini-3.1-flash-lite",
+            displayName: "Gemini 3.1 Flash Lite",
+            supportsExplicitContextCaching: true
         )
     ]
 
@@ -17,7 +24,7 @@ enum GeminiAPIModelRegistry {
         "google:gemma-4-31b-it": "google:gemma-4-26b-a4b-it"
     ]
 
-    static func isGemmaAPIModel(_ model: String) -> Bool {
+    static func isHostedGeminiAPIModel(_ model: String) -> Bool {
         modelRegistry[model] != nil
     }
 
@@ -31,14 +38,24 @@ enum GeminiAPIModelRegistry {
 }
 
 final class GeminiAPISummarizer: @unchecked Sendable, InferenceBackend {
+    private static let maxOutputTokens = 20_000
+
     private let captureStore: CaptureStore
     private let apiKeyStore: GeminiAPIKeyStore
-    private let requestTimeout: TimeInterval
+    private let maxRequestDuration: TimeInterval
 
-    init(captureStore: CaptureStore, apiKeyStore: GeminiAPIKeyStore = .shared) {
+    init(
+        captureStore: CaptureStore,
+        apiKeyStore: GeminiAPIKeyStore = .shared,
+        inactivityTimeout: TimeInterval = 45,
+        maxRequestDuration: TimeInterval = 600
+    ) {
         self.captureStore = captureStore
         self.apiKeyStore = apiKeyStore
-        self.requestTimeout = 45
+        // `inactivityTimeout` is retained for API compatibility; Gemma uses a single
+        // non-streaming request bounded by `maxRequestDuration`.
+        _ = inactivityTimeout
+        self.maxRequestDuration = maxRequestDuration
     }
 
     func providerLabel(for model: String) -> String {
@@ -62,44 +79,117 @@ final class GeminiAPISummarizer: @unchecked Sendable, InferenceBackend {
             return
         }
 
-        guard let apiKey = apiKeyStore.apiKey() else {
+        guard let apiKey = apiKeyStore.readKey(allowUI: false) else {
             complete(.failure(.saveFailed("Missing Gemini API key. Add one in the model menu or set GEMINI_API_KEY.")), completion: completion)
             return
         }
 
-        let prompt = InferencePromptBuilder.localPrompt(for: record, backend: .geminiAPI)
-        let useThinking = false
+        let userPrompt = InferencePromptBuilder.geminiAPIUserPrompt(for: record)
+        let fallbackPrompt = InferencePromptBuilder.localPrompt(for: record, backend: .geminiAPI)
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            callGeminiAPI(
-                apiModel: info.apiModel,
-                apiKey: apiKey,
-                prompt: prompt,
-                useThinking: useThinking,
-                callbacks: callbacks
-            ) { [self] result in
-                switch result {
-                case .failure(let error):
-                    complete(.failure(error), completion: completion)
-                case .success(let output):
-                    do {
-                        try output.write(to: record.rawSummaryURL, atomically: true, encoding: .utf8)
-                        let parsed = Self.parseOrWrapInstructionFailure(output)
-                        let saved = try captureStore.saveSummary(parsed, for: record)
-                        complete(.success(saved), completion: completion)
-                    } catch {
-                        complete(.failure(.saveFailed(error.localizedDescription)), completion: completion)
+            let configuration = Self.makeURLSessionConfiguration(maxRequestDuration: maxRequestDuration)
+            let session = URLSession(configuration: configuration)
+
+            if info.supportsExplicitContextCaching {
+                GeminiAPIContextCache.shared.ensureCachedContent(
+                    apiModel: info.apiModel,
+                    apiKey: apiKey,
+                    session: session,
+                    callbacks: callbacks
+                ) { [self] cacheResult in
+                    switch cacheResult {
+                    case .failure(let error):
+                        self.complete(.failure(error), completion: completion)
+                    case .success(let cachedContentName):
+                        if let cachedContentName {
+                            Task { @MainActor in
+                                callbacks.onDebug("Gemini API generateContent will reuse cachedContent \(cachedContentName).")
+                            }
+                        } else {
+                            Task { @MainActor in
+                                callbacks.onDebug("Gemini API context cache unavailable; falling back to uncached prompt.")
+                            }
+                        }
+                        self.runGeminiAPIRequest(
+                            record: record,
+                            apiModel: info.apiModel,
+                            apiKey: apiKey,
+                            userPrompt: userPrompt,
+                            fallbackPrompt: fallbackPrompt,
+                            cachedContentName: cachedContentName,
+                            session: session,
+                            callbacks: callbacks,
+                            completion: completion
+                        )
                     }
+                }
+            } else {
+                self.runGeminiAPIRequest(
+                    record: record,
+                    apiModel: info.apiModel,
+                    apiKey: apiKey,
+                    userPrompt: userPrompt,
+                    fallbackPrompt: fallbackPrompt,
+                    cachedContentName: nil,
+                    session: session,
+                    callbacks: callbacks,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func runGeminiAPIRequest(
+        record: CaptureRecord,
+        apiModel: String,
+        apiKey: String,
+        userPrompt: String,
+        fallbackPrompt: String,
+        cachedContentName: String?,
+        session: URLSession,
+        callbacks: InferenceBackendCallbacks,
+        completion: @escaping @MainActor @Sendable (Result<SummaryRecord, CodexSummarizerError>) -> Void
+    ) {
+        callGeminiAPI(
+            apiModel: apiModel,
+            apiKey: apiKey,
+            prompt: cachedContentName == nil ? fallbackPrompt : userPrompt,
+            cachedContentName: cachedContentName,
+            session: session,
+            callbacks: callbacks
+        ) { [self] result in
+            switch result {
+            case .failure(let error):
+                complete(.failure(error), completion: completion)
+            case .success(let output):
+                do {
+                    try output.write(to: record.rawSummaryURL, atomically: true, encoding: .utf8)
+                    let parsed = Self.parseOrWrapInstructionFailure(output)
+                    let saved = try captureStore.saveSummary(parsed, for: record)
+                    complete(.success(saved), completion: completion)
+                } catch {
+                    complete(.failure(.saveFailed(error.localizedDescription)), completion: completion)
                 }
             }
         }
+    }
+
+    private static func makeURLSessionConfiguration(maxRequestDuration: TimeInterval) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = maxRequestDuration
+        configuration.timeoutIntervalForResource = maxRequestDuration
+        configuration.waitsForConnectivity = false
+        return configuration
     }
 
     private func callGeminiAPI(
         apiModel: String,
         apiKey: String,
         prompt: String,
-        useThinking: Bool,
+        cachedContentName: String?,
+        session: URLSession,
         callbacks: InferenceBackendCallbacks,
         completion: @escaping @Sendable (Result<String, CodexSummarizerError>) -> Void
     ) {
@@ -113,7 +203,7 @@ final class GeminiAPISummarizer: @unchecked Sendable, InferenceBackend {
             return
         }
 
-        var request = URLRequest(url: url, timeoutInterval: requestTimeout)
+        var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -121,14 +211,14 @@ final class GeminiAPISummarizer: @unchecked Sendable, InferenceBackend {
 
         let body = GeminiGenerateContentRequest(
             contents: [
-                .init(parts: [.init(text: prompt)])
+                .init(role: "user", parts: [.init(text: prompt, thought: nil)])
             ],
             generationConfig: .init(
                 responseMimeType: "application/json",
                 temperature: 0.2,
-                maxOutputTokens: 1024,
-                thinkingConfig: nil
-            )
+                maxOutputTokens: Self.maxOutputTokens
+            ),
+            cachedContent: cachedContentName
         )
 
         do {
@@ -139,90 +229,82 @@ final class GeminiAPISummarizer: @unchecked Sendable, InferenceBackend {
         }
 
         Task { @MainActor in
-            callbacks.onDebug("Gemma API thinking mode disabled.")
-            callbacks.onDebug("Gemma API endpoint: v1beta \(apiModel):generateContent.")
-            callbacks.onDebug("Gemma API request sent to generateContent.")
-            callbacks.onDebug("Gemma API waiting for response (45s timeout).")
+            callbacks.onDebug("Gemini API thinking policy: off (no thinkingConfig).")
+            callbacks.onDebug("Gemini API maxOutputTokens: \(Self.maxOutputTokens).")
+            callbacks.onDebug("Gemini API endpoint: v1beta \(apiModel):generateContent.")
+            if let cachedContentName {
+                callbacks.onDebug("Gemini API cachedContent: \(cachedContentName).")
+            }
+            callbacks.onDebug("Gemini API request timeout: \(Int(maxRequestDuration))s.")
+            callbacks.onDebug("Gemini API request sent.")
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = min(requestTimeout, 20)
-        configuration.timeoutIntervalForResource = requestTimeout
-        configuration.waitsForConnectivity = false
-        let session = URLSession(configuration: configuration)
-        let completionBox = GeminiAPICompletionBox(completion: completion)
-        let timeout = requestTimeout
-        let task = session.dataTask(with: request) { data, response, error in
-            defer {
-                session.finishTasksAndInvalidate()
-            }
-
+        session.dataTask(with: request) { data, response, error in
             if let error {
                 Task { @MainActor in
-                    callbacks.onDebug("Gemma API network error: \(error.localizedDescription)")
+                    callbacks.onDebug("Gemini API network error: \(error.localizedDescription)")
                 }
-                completionBox.finish(.failure(.failed(status: -1, output: "Gemini API request failed: \(error.localizedDescription)")))
+                completion(.failure(.failed(status: -1, output: "Gemini API request failed: \(error.localizedDescription)")))
                 return
             }
 
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let rawResponse = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            Task { @MainActor in
-                callbacks.onDebug("Gemma API response status: \(statusCode), bytes: \(data?.count ?? 0).")
-            }
-
             guard (200..<300).contains(statusCode) else {
-                let message = Self.geminiAPIErrorMessage(from: data) ?? rawResponse
-                completionBox.finish(.failure(.failed(status: Int32(statusCode), output: message)))
+                let message = parseGeminiAPIErrorMessage(from: data)
+                    ?? String(data: data ?? Data(), encoding: .utf8)
+                    ?? "HTTP \(statusCode)"
+                completion(.failure(.failed(status: Int32(statusCode), output: message)))
                 return
             }
 
-            guard let data else {
-                completionBox.finish(.failure(.unreadableOutput("Empty response from Gemini API")))
+            guard let data, data.isEmpty == false else {
+                completion(.failure(.unreadableOutput("Gemini API returned an empty body")))
                 return
             }
 
-            do {
-                let decoded = try JSONDecoder().decode(GeminiGenerateContentResponse.self, from: data)
+            let decoded = try? JSONDecoder().decode(GeminiGenerateContentResponse.self, from: data)
+            let extracted: ExtractedGeminiAnswer
+            if let decoded {
                 if let message = decoded.error?.message, message.isEmpty == false {
-                    completionBox.finish(.failure(.failed(status: Int32(statusCode), output: message)))
+                    completion(.failure(.failed(status: Int32(statusCode), output: message)))
                     return
                 }
-
-                let output = decoded.candidates?
-                    .flatMap { $0.content?.parts ?? [] }
-                    .compactMap(\.text)
-                    .joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-                guard output.isEmpty == false else {
-                    completionBox.finish(.failure(.unreadableOutput("Gemini API returned no text candidates")))
-                    return
-                }
-
-                Task { @MainActor in
-                    callbacks.onDebug("Gemma API returned \(output.count) characters.")
-                }
-                completionBox.finish(.success(output))
-            } catch {
-                let fallback = rawResponse.trimmingCharacters(in: .whitespacesAndNewlines)
-                let message = fallback.isEmpty ? error.localizedDescription : fallback
-                completionBox.finish(.failure(.unreadableOutput(message)))
+                extracted = Self.collectAnswerText(from: decoded)
+            } else {
+                let salvaged = salvageTextFromRawJSON(data)
+                extracted = ExtractedGeminiAnswer(
+                    answer: salvaged,
+                    thoughtCharacterCount: 0,
+                    salvagedFromThought: false
+                )
             }
-        }
-        task.resume()
 
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
-            guard completionBox.finish(.failure(.failed(status: -1, output: "Gemini API request timed out after \(Int(timeout)) seconds."))) else {
+            guard extracted.answer.isEmpty == false else {
+                Task { @MainActor in
+                    callbacks.onDebug("Gemini API response bytes: \(data.count).")
+                    callbacks.onDebug("Gemini API response preview: \(debugPreview(data)).")
+                }
+                completion(.failure(.unreadableOutput("Gemini API returned no usable text candidates")))
                 return
             }
+
             Task { @MainActor in
-                callbacks.onDebug("Gemma API timed out after \(Int(timeout)) seconds.")
+                callbacks.onDebug("Gemini API response: \(extracted.answer.count) answer characters.")
+                if extracted.salvagedFromThought {
+                    callbacks.onDebug("Gemini API salvaged answer text from thought-channel parts.")
+                }
+                if extracted.thoughtCharacterCount > 0 {
+                    callbacks.onDebug("Gemini API filtered \(extracted.thoughtCharacterCount) thought-channel characters.")
+                }
+                if let thoughtsTokens = decoded?.usageMetadata?.thoughtsTokenCount, thoughtsTokens > 0 {
+                    callbacks.onDebug("Gemini API thoughtsTokenCount: \(thoughtsTokens).")
+                }
+                if let cachedTokens = decoded?.usageMetadata?.cachedContentTokenCount, cachedTokens > 0 {
+                    callbacks.onDebug("Gemini API cachedContentTokenCount: \(cachedTokens).")
+                }
             }
-            task.cancel()
-            session.invalidateAndCancel()
-        }
+            completion(.success(extracted.answer))
+        }.resume()
     }
 
     private func complete(
@@ -232,6 +314,48 @@ final class GeminiAPISummarizer: @unchecked Sendable, InferenceBackend {
         Task { @MainActor in
             completion(result)
         }
+    }
+
+    private struct ExtractedGeminiAnswer {
+        let answer: String
+        let thoughtCharacterCount: Int
+        let salvagedFromThought: Bool
+    }
+
+    private static func collectAnswerText(
+        from decoded: GeminiGenerateContentResponse
+    ) -> ExtractedGeminiAnswer {
+        var answerParts: [String] = []
+        var thoughtParts: [String] = []
+
+        for part in decoded.candidates?.flatMap({ $0.content?.parts ?? [] }) ?? [] {
+            guard let text = part.text, text.isEmpty == false else {
+                continue
+            }
+
+            if part.thought == true {
+                thoughtParts.append(text)
+            } else {
+                answerParts.append(text)
+            }
+        }
+
+        let answer = answerParts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        let thought = thoughtParts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if answer.isEmpty == false {
+            return ExtractedGeminiAnswer(
+                answer: answer,
+                thoughtCharacterCount: thought.count,
+                salvagedFromThought: false
+            )
+        }
+
+        return ExtractedGeminiAnswer(
+            answer: thought,
+            thoughtCharacterCount: thought.count,
+            salvagedFromThought: thought.isEmpty == false
+        )
     }
 
     private static func parseOrWrapInstructionFailure(_ output: String) -> ParsedCodexSummary {
@@ -266,49 +390,99 @@ final class GeminiAPISummarizer: @unchecked Sendable, InferenceBackend {
             ]
         )
     }
+}
 
-    private static func geminiAPIErrorMessage(from data: Data?) -> String? {
-        guard let data else {
-            return nil
-        }
-
-        if let decoded = try? JSONDecoder().decode(GeminiGenerateContentResponse.self, from: data),
-           let message = decoded.error?.message,
-           message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return message
-        }
-
+private func parseGeminiAPIErrorMessage(from data: Data?) -> String? {
+    guard let data else {
         return nil
     }
+
+    if let decoded = try? JSONDecoder().decode(GeminiGenerateContentResponse.self, from: data),
+       let message = decoded.error?.message,
+       message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+        return message
+    }
+
+    return nil
+}
+
+private func debugPreview(_ data: Data, limit: Int = 240) -> String {
+    let raw = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
+    if raw.count <= limit {
+        return raw
+    }
+    return String(raw.prefix(limit)) + "…"
+}
+
+private func salvageTextFromRawJSON(_ data: Data) -> String {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let candidates = object["candidates"] as? [[String: Any]] else {
+        return ""
+    }
+
+    var answerParts: [String] = []
+    var thoughtParts: [String] = []
+
+    for candidate in candidates {
+        guard let content = candidate["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]] else {
+            continue
+        }
+
+        for part in parts {
+            guard let text = part["text"] as? String, text.isEmpty == false else {
+                continue
+            }
+
+            if part["thought"] as? Bool == true {
+                thoughtParts.append(text)
+            } else {
+                answerParts.append(text)
+            }
+        }
+    }
+
+    let answer = answerParts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+    if answer.isEmpty == false {
+        return answer
+    }
+
+    return thoughtParts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 private struct GeminiGenerateContentRequest: Encodable {
     let contents: [GeminiContent]
     let generationConfig: GeminiGenerationConfig
+    let cachedContent: String?
 }
 
 private struct GeminiGenerationConfig: Encodable {
     let responseMimeType: String
     let temperature: Double
     let maxOutputTokens: Int
-    let thinkingConfig: GeminiThinkingConfig?
-}
-
-private struct GeminiThinkingConfig: Encodable {
-    let thinkingLevel: String
 }
 
 private struct GeminiContent: Codable {
+    let role: String?
     let parts: [GeminiPart]
 }
 
 private struct GeminiPart: Codable {
     let text: String?
+    let thought: Bool?
 }
 
 private struct GeminiGenerateContentResponse: Decodable {
     let candidates: [GeminiCandidate]?
+    let usageMetadata: GeminiUsageMetadata?
     let error: GeminiAPIError?
+}
+
+private struct GeminiUsageMetadata: Decodable {
+    let thoughtsTokenCount: Int?
+    let candidatesTokenCount: Int?
+    let totalTokenCount: Int?
+    let cachedContentTokenCount: Int?
 }
 
 private struct GeminiCandidate: Decodable {
@@ -317,28 +491,4 @@ private struct GeminiCandidate: Decodable {
 
 private struct GeminiAPIError: Decodable {
     let message: String?
-}
-
-private final class GeminiAPICompletionBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var didFinish = false
-    private let completion: @Sendable (Result<String, CodexSummarizerError>) -> Void
-
-    init(completion: @escaping @Sendable (Result<String, CodexSummarizerError>) -> Void) {
-        self.completion = completion
-    }
-
-    @discardableResult
-    func finish(_ result: Result<String, CodexSummarizerError>) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard didFinish == false else {
-            return false
-        }
-
-        didFinish = true
-        completion(result)
-        return true
-    }
 }

@@ -44,7 +44,7 @@ capture.md -> SummaryPipeline -> backend -> [timestamp]-[tagline]-result.json
 
 `codex` uses the local Codex CLI and is the only Swift backend that can run the second web-search verification pass.
 
-`google:gemma-4-26b-a4b-it` uses hosted Gemma 4 MoE through Google's Gemini API. Select the Gemma model in the model dropdown to reveal the API key field. Swift stores the token directly in Keychain as a normal generic password under service `com.mikuexplains.app`, with no user-presence or biometric access control. For development, `GEMINI_API_KEY` or `GOOGLE_API_KEY` also works if no Keychain value exists.
+Hosted Google models (`google:gemma-4-26b-a4b-it`, `google:gemini-3.1-flash-lite`) use the Gemini API. Select a hosted Google model in the model dropdown to reveal the API key field. Swift stores the token directly in Keychain as a normal generic password under service `com.mikuexplains.app`, with a trusted-application ACL and no user-presence or biometric access control. When Gemma needs Keychain access, React shows a heads-up overlay first; macOS permission is requested only after the user clicks `got it`. For development, `GEMINI_API_KEY` or `GOOGLE_API_KEY` also works if no Keychain value exists.
 
 Every non-Codex, non-`google:*` supported model tag uses the managed llama.cpp backend. Miku Explains downloads the full `llama-server` runtime into:
 
@@ -62,7 +62,7 @@ The Swift app no longer uses Ollama.
 
 ### Result Streaming
 
-The managed llama.cpp backend uses OpenAI-compatible streaming for local models. Hosted Gemma 4 uses Google's documented Gemma-on-Gemini `generateContent` endpoint, caps output at 1024 tokens, and parses the final response after it completes. Gemma 4 only documents thinking as an on/off toggle, so Miku uses a selective policy: simple selections omit `thinkingConfig`, while longer or more complex selections enable the supported `thinkingConfig.thinkingLevel = "high"`. The Gemma request has a 45-second hard timeout and logs endpoint, thinking policy, waiting state, HTTP status, response bytes, network errors, and returned character count to the debug panel. Codex also remains final-response based because it is responsible for the optional web-search verification pass.
+The managed llama.cpp backend uses OpenAI-compatible streaming for local models. Hosted Gemma 4 uses Google's documented Gemma-on-Gemini `generateContent` endpoint, sets `maxOutputTokens` to 20000, omits `thinkingConfig` so thinking stays off, and parses the final response after it completes. Thought-channel parts are filtered before JSON parsing if present. Gemma requests use a configurable hard timeout (default 600s) and log endpoint, HTTP status, response bytes, network errors, returned character count, and `thoughtsTokenCount` to the debug panel. Codex also remains final-response based because it is responsible for the optional web-search verification pass.
 
 For llama.cpp models, Swift sends `stream: true`, `max_tokens: 1024`, and `cache_prompt: true` to `/v1/chat/completions` and reads server-sent event chunks from `llama-server`. The prompt uses an ordered key contract rather than copyable placeholder JSON values, keeps the stable instruction prefix before the changing highlighted text/date/hints so llama.cpp can reuse prefix KV cache, then forces deterministic JSON key order so the app can parse useful partial structure before the full JSON is valid:
 
@@ -93,7 +93,7 @@ For llama.cpp models, Swift sends `stream: true`, `max_tokens: 1024`, and `cache
 }
 ```
 
-For local llama.cpp models, the result panel opens as soon as a complete `tagline` and `primary_intent` have streamed in. The streaming parser then reads the single `items` array directly: when an item has complete `type` and `title` fields and its `body` string starts, that card appears and its body updates as more tokens arrive. While there is no parseable card body yet, React shows the shared `Thinking.` / `Thinking..` / `Thinking...` status line in the result body. Hosted Gemma uses the same status line during its thinking phase, then replaces it with final result cards when `generateContent` completes. History and disk persistence prefer the final complete JSON, but if llama.cpp stops mid-JSON after cards have streamed, Swift saves those partial cards with a cutoff note instead of replacing the result with an instruction-failure card.
+For local llama.cpp models, the result panel opens as soon as a complete `tagline` and `primary_intent` have streamed in. The streaming parser then reads the single `items` array directly: when an item has complete `type` and `title` fields and its `body` string starts, that card appears and its body updates as more tokens arrive. While there is no parseable card body yet, React shows the shared `Thinking.` / `Thinking..` / `Thinking...` status line in the result body. Hosted Gemma waits on the final `generateContent` response and does not use the thinking status line. History and disk persistence prefer the final complete JSON, but if llama.cpp stops mid-JSON after cards have streamed, Swift saves those partial cards with a cutoff note instead of replacing the result with an instruction-failure card.
 
 Tool payloads are optional. The first supported accept buttons are `calendar.create_event` and `reminders.create_reminder`; React shows a button on the card, and Swift executes the tool through EventKit only after the user clicks. The prompt includes the current local date/time/timezone so vague dates like "Tuesday" can resolve to the next future occurrence.
 
@@ -145,7 +145,7 @@ If System Settings says Miku Explains already has Accessibility permission but t
 ~/Library/Application Support/Denebula
 ```
 
-then resets saved defaults, resets Accessibility permission, rebuilds, packages, and relaunches the app.
+then resets saved defaults, deletes the Gemini API Keychain items for `com.mikuexplains.app` and legacy `app.miku-explains.prototype`, resets Accessibility permission, rebuilds, packages, and relaunches the app.
 
 ## Rust/Tauri Port
 

@@ -56,8 +56,9 @@
     { id: "mistral:7b",   label: "Mistral 7B",  tag: "mistral:7b",   size: "4.5 GB", speed: "~50 t/s" },
   ];
 
-  const GEMMA_API_MODELS = [
-    { id: "google:gemma-4-26b-a4b-it",   label: "Gemma 4 MoE",  tag: null, provider: "google", size: null, speed: "api" },
+  const HOSTED_GEMINI_API_MODELS = [
+    { id: "google:gemma-4-26b-a4b-it", label: "Gemma 4 MoE", tag: null, provider: "google", size: null, speed: "api" },
+    { id: "google:gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", tag: null, provider: "google", size: null, speed: "api" },
   ];
 
   function modelShortLabel(modelId, state) {
@@ -72,7 +73,7 @@
     const localCatalog = Array.isArray(state.modelCatalog) && state.modelCatalog.length
       ? state.modelCatalog
       : PRESET_MODELS.filter((model) => model.id !== "codex");
-    return [PRESET_MODELS[0]].concat(localCatalog, GEMMA_API_MODELS);
+    return [PRESET_MODELS[0]].concat(localCatalog, HOSTED_GEMINI_API_MODELS);
   }
 
   function modelPullLabel(pull) {
@@ -86,31 +87,21 @@
   function ModelPill({ state }) {
     const [open, setOpen] = React.useState(false);
     const [apiKeyDraft, setApiKeyDraft] = React.useState("");
-    const [warningDismissed, setWarningDismissed] = React.useState(false);
     const apiInputRef = React.useRef(null);
     const btnRef = React.useRef(null);
     const [dropRect, setDropRect] = React.useState(null);
+    const openedAtRef = React.useRef(0);
+    const ignoreOutsideUntilRef = React.useRef(0);
 
     const geminiConfigured = state.geminiAPIKeyConfigured === true;
-
-    React.useEffect(() => {
-      // React acknowledges a warning when the user switches off the
-      // hosted Gemma row, so the next Gemma pick can show it again.
-      if (!String(state.selectedModel || "").startsWith("google:")) {
-        setWarningDismissed(false);
-      }
-    }, [state.selectedModel]);
-
-    React.useEffect(() => {
-      if (geminiConfigured) {
-        setWarningDismissed(false);
-      }
-    }, [geminiConfigured]);
+    const geminiKeyMissing = state.geminiAPIKeyConfigured === false;
+    const geminiKeyLocked = state.geminiAPIKeyConfigured == null;
 
     React.useEffect(() => {
       if (!open) return;
       function onOutside(e) {
-        if (!e.target.closest(".model-dropdown") && !e.target.closest(".model-pill")) {
+        if (Date.now() < ignoreOutsideUntilRef.current) return;
+        if (!e.target.closest(".model-dropdown") && !e.target.closest(".model-pill-wrap")) {
           setOpen(false);
         }
       }
@@ -118,11 +109,31 @@
       return () => document.removeEventListener("mousedown", onOutside);
     }, [open]);
 
-    function handleToggle() {
-      if (!open && btnRef.current) {
+    React.useEffect(() => {
+      if (state.geminiKeyWarning) {
+        sendDebug("ModelPill: closing dropdown because geminiKeyWarning=true");
+        setOpen(false);
+      }
+    }, [state.geminiKeyWarning]);
+
+    function openDropdown() {
+      if (btnRef.current) {
         setDropRect(btnRef.current.getBoundingClientRect());
       }
-      setOpen((o) => !o);
+      const now = Date.now();
+      openedAtRef.current = now;
+      ignoreOutsideUntilRef.current = now + 400;
+      setOpen(true);
+    }
+
+    function handleToggle() {
+      if (open) {
+        // Fast double-click after focus (first click opens, second closes) — ignore.
+        if (Date.now() - openedAtRef.current < 400) return;
+        setOpen(false);
+        return;
+      }
+      openDropdown();
     }
 
     const pull = state.modelPull;
@@ -143,10 +154,9 @@
         return;
       }
       if (preset.provider === "google") {
+        sendDebug(`ModelPill: Gemma row selected id=${preset.id} geminiAPIKeyConfigured=${state.geminiAPIKeyConfigured}`);
         send("setModel", { model: preset.id });
-        if (geminiConfigured) {
-          setOpen(false);
-        }
+        setOpen(false);
         return;
       }
       if (isInstalled(preset.tag)) {
@@ -158,32 +168,75 @@
       }
     }
 
-    function dismissWarning() {
-      setWarningDismissed(true);
-      send("dismissGeminiKeyWarning");
-    }
-
-    const showWarning = open
-      && !geminiConfigured
-      && state.geminiKeyWarning
-      && !warningDismissed
-      && String(state.selectedModel || "").startsWith("google:");
-
     const rows = modelCatalog.map((preset) => {
       const isSelected = state.selectedModel === preset.id;
       const isPulling = pull && !pull.done && pull.model === preset.id;
       const isHosted = preset.provider === "google";
+      const isLocal = !isHosted && preset.id !== "codex" && preset.tag;
+      const isLocalInstalled = isLocal && isInstalled(preset.tag);
       const isInstd = preset.tag === null || isInstalled(preset.tag) || isHosted;
       const pullFailed = pull && pull.done && pull.error && pull.model === preset.id;
 
+      let rightSlot = null;
+      if (isPulling) {
+        rightSlot = h(
+          "span",
+          { className: "model-row-right", title: pull.statusText || "" },
+          h("span", { className: "model-pull-pct" }, modelPullLabel(pull)),
+          h("div", { className: "model-pull-bar" },
+            h("div", { className: "model-pull-fill", style: { width: `${(pull.progress || 0) * 100}%` } })
+          )
+        );
+      } else if (pullFailed) {
+        rightSlot = h("span", { className: "model-row-error" }, "failed");
+      } else if (isHosted && geminiKeyLocked) {
+        rightSlot = h("span", { className: "model-row-speed" }, "keychain");
+      } else if (isHosted && geminiKeyMissing) {
+        rightSlot = h("span", { className: "model-row-error" }, "needs key");
+      } else if (isLocalInstalled) {
+        rightSlot = h(
+          "button",
+          {
+            type: "button",
+            className: "model-row-delete",
+            title: `Delete ${preset.label}`,
+            onClick: (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              send("deleteModel", { model: preset.id });
+            }
+          },
+          "delete"
+        );
+      } else if (isInstd) {
+        rightSlot = h("span", { className: "model-row-speed" }, preset.speed || "");
+      } else {
+        rightSlot = h(
+          "span",
+          { className: "model-row-dl" },
+          `↓ ${preset.size || ""}`
+        );
+      }
+
       return h(
-        "button",
+        "div",
         {
           key: preset.id,
-          type: "button",
           className: `model-row${isSelected ? " is-selected" : ""}${isPulling ? " is-pulling" : ""}`,
-          onClick: () => handleSelectOrPull(preset),
-          disabled: isPulling
+          role: "button",
+          tabIndex: isPulling ? -1 : 0,
+          onClick: (event) => {
+            if (isPulling) return;
+            if (event.target.closest(".model-row-delete")) return;
+            handleSelectOrPull(preset);
+          },
+          onKeyDown: (event) => {
+            if (isPulling) return;
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              handleSelectOrPull(preset);
+            }
+          }
         },
         h(
           "span",
@@ -191,26 +244,7 @@
           isSelected ? h("span", { className: "model-check" }, "✓ ") : null,
           preset.label
         ),
-        isPulling
-          ? h(
-              "span",
-              { className: "model-row-right", title: pull.statusText || "" },
-              h("span", { className: "model-pull-pct" }, modelPullLabel(pull)),
-              h("div", { className: "model-pull-bar" },
-                h("div", { className: "model-pull-fill", style: { width: `${(pull.progress || 0) * 100}%` } })
-              )
-            )
-          : pullFailed
-          ? h("span", { className: "model-row-error" }, "failed")
-          : isHosted && !geminiConfigured
-          ? h("span", { className: "model-row-error" }, "needs key")
-          : isInstd
-          ? h("span", { className: "model-row-speed" }, preset.speed || "")
-          : h(
-              "span",
-              { className: "model-row-dl" },
-              `↓ ${preset.size || ""}`
-            )
+        rightSlot
       );
     });
     const showGeminiKeyForm = String(state.selectedModel || "").startsWith("google:");
@@ -246,10 +280,15 @@
                   if (apiInputRef.current) {
                     apiInputRef.current.value = "";
                   }
-                  setWarningDismissed(true);
                 }
               },
-              h("div", { className: "gemini-key-label" }, geminiConfigured ? "Gemini key saved" : "Gemini key required"),
+              h("div", { className: "gemini-key-label" },
+                geminiConfigured
+                  ? "Gemini key saved"
+                  : geminiKeyLocked
+                  ? "Gemini key in Keychain"
+                  : "Gemini key required"
+              ),
               h("div", { className: "gemini-key-row" },
                 h("input", {
                   className: "gemini-key-input",
@@ -288,8 +327,7 @@
                       }
                     }, "clear")
                   : null
-              ),
-              showWarning ? h(ApolloKeyWarning, { onDismiss: dismissWarning }) : null
+              )
             ) : null
           ),
           document.body
@@ -298,15 +336,17 @@
 
     return h(
       "div",
-      { className: "model-pill-wrap" },
+      {
+        className: "model-pill-wrap",
+        onClick: handleToggle
+      },
       h(
         "button",
         {
           ref: btnRef,
           type: "button",
           className: `model-pill${open ? " is-open" : ""}`,
-          title: "Change model",
-          onClick: handleToggle
+          title: "Change model"
         },
         h("span", null, "model:"),
         h("strong", null, modelShortLabel(state.selectedModel || "codex", state))
@@ -316,6 +356,11 @@
   }
 
   function ApolloKeyWarning({ onDismiss }) {
+    React.useEffect(() => {
+      sendDebug("ApolloKeyWarning: overlay mounted in body portal");
+      return () => sendDebug("ApolloKeyWarning: overlay unmounted");
+    }, []);
+
     return h(
       "div",
       { className: "apollo-key-warning", role: "status" },
@@ -324,21 +369,29 @@
         h("p", null, "This key is saved to your macOS Keychain."),
         h("p", null, "When the system asks, press ", h("strong", null, "Always Allow"), " so Miku can read it later without re-asking you.")
       ),
-      h("button", {
+        h("button", {
         type: "button",
         className: "apollo-key-warning-dismiss",
-        onClick: onDismiss
+        onClick: () => {
+          sendDebug("ApolloKeyWarning: got it clicked");
+          onDismiss();
+        }
       }, "got it")
     );
   }
 
-  function send(type, payload) {    const handler = window.webkit &&
+  function send(type, payload) {
+    const handler = window.webkit &&
       window.webkit.messageHandlers &&
       window.webkit.messageHandlers.mikuPanel;
 
     if (handler) {
       handler.postMessage(Object.assign({ type }, payload || {}));
     }
+  }
+
+  function sendDebug(message) {
+    send("logDebug", { message: String(message || "") });
   }
 
   function cleanType(type) {
@@ -377,6 +430,16 @@
     const status = statusForState(state);
     const showStatus = false && status;
     const [sleepFrame, setSleepFrame] = React.useState(0);
+    const prevGeminiWarningRef = React.useRef(state.geminiKeyWarning);
+
+    React.useEffect(() => {
+      if (prevGeminiWarningRef.current !== state.geminiKeyWarning) {
+        sendDebug(
+          `AppFrame: geminiKeyWarning ${prevGeminiWarningRef.current} -> ${state.geminiKeyWarning} view=${state.view} selectedModel=${state.selectedModel}`
+        );
+        prevGeminiWarningRef.current = state.geminiKeyWarning;
+      }
+    }, [state.geminiKeyWarning, state.view, state.selectedModel]);
 
     React.useEffect(() => {
       if (state.isFocused) {
@@ -412,6 +475,23 @@
       : sleepFrame === 0
       ? { width: 287, height: 248 }
       : { width: 289, height: 257 };
+
+    const showGeminiKeychainNotice = state.geminiKeyWarning;
+    const geminiKeyWarningOverlay = showGeminiKeychainNotice
+      ? ReactDOM.createPortal(
+          h(
+            "div",
+            {
+              className: "apollo-key-warning-overlay apollo-key-warning-overlay-portal",
+              style: { zIndex: 100000 }
+            },
+            h(ApolloKeyWarning, {
+              onDismiss: () => send("dismissGeminiKeyWarning")
+            })
+          ),
+          document.body
+        )
+      : null;
 
     return h(
       "main",
@@ -471,6 +551,7 @@
           h("p", { className: "subline" }, labelForView(state))
         ),
         h("div", { className: "body" }, children),
+        geminiKeyWarningOverlay,
         showBack
           ? h(
               "div",
@@ -652,7 +733,19 @@
   }
 
   function LoadingPage({ state }) {
-    if (state.loadingPhase === "thinking") {
+    const [fakeThinking, setFakeThinking] = React.useState(false);
+
+    React.useEffect(() => {
+      setFakeThinking(false);
+      if (state.loadingPhase === "web" || state.loadingPhase === "thinking") {
+        return undefined;
+      }
+
+      const timeout = window.setTimeout(() => setFakeThinking(true), 3000);
+      return () => window.clearTimeout(timeout);
+    }, [state.loadingPhase, state.title]);
+
+    if (state.loadingPhase === "thinking" || fakeThinking) {
       return h(
         "div",
         { className: "scroll result-scroll" },

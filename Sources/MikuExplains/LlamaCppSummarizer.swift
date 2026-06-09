@@ -104,7 +104,9 @@ final class LlamaCppSummarizer: @unchecked Sendable, InferenceBackend {
 
         LlamaCppManager.shared.ensureServerBinaryInstalled(
             progress: { message in
-                callbacks.onDebug("llama.cpp install: \(message)")
+                Task { @MainActor in
+                    callbacks.onDebug("llama.cpp install: \(message)")
+                }
             },
             completion: { result in
                 resultBox.value = result

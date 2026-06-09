@@ -7,14 +7,17 @@ final class CollapseOverlayWindowController: NSWindowController {
     private static let panelRightMargin: CGFloat = 40
     private static let panelTopMargin: CGFloat = 14
     private static let panelBottomMargin: CGFloat = 40
+    private var savedWindowLevel: NSWindow.Level?
     var onShortcutSettingsRequested: (() -> Void)?
     var onShortcutRecorded: ((ShortcutKeyboardEvent) -> Void)?
     var onSetModel: ((String) -> Void)?
     var onSetGeminiAPIKey: ((String) -> Void)?
     var onPullModel: ((String) -> Void)?
+    var onDeleteModel: ((String) -> Void)?
     var onExecuteTool: ((AIResultTool) -> Void)?
     var onReady: (() -> Void)?
     var onDismissGeminiKeyWarning: (() -> Void)?
+    var onShowHistory: (() -> Void)?
 
     init() {
         let window = CollapsePanelWindow(
@@ -66,6 +69,9 @@ final class CollapseOverlayWindowController: NSWindowController {
         contentView.onPullModel = { [weak self] model in
             self?.onPullModel?(model)
         }
+        contentView.onDeleteModel = { [weak self] model in
+            self?.onDeleteModel?(model)
+        }
         contentView.onExecuteTool = { [weak self] tool in
             self?.onExecuteTool?(tool)
         }
@@ -74,6 +80,9 @@ final class CollapseOverlayWindowController: NSWindowController {
         }
         contentView.onDismissGeminiKeyWarning = { [weak self] in
             self?.onDismissGeminiKeyWarning?()
+        }
+        contentView.onShowHistory = { [weak self] in
+            self?.onShowHistory?()
         }
     }
 
@@ -104,7 +113,6 @@ final class CollapseOverlayWindowController: NSWindowController {
         usedWebSearch: Bool,
         cards: [AIResultCard],
         debug: String,
-        preserveExistingDebug: Bool = false,
         onBack: @escaping () -> Void
     ) {
         contentView.showResult(
@@ -113,7 +121,6 @@ final class CollapseOverlayWindowController: NSWindowController {
             usedWebSearch: usedWebSearch,
             cards: cards,
             debug: debug,
-            preserveExistingDebug: preserveExistingDebug,
             onBack: onBack
         )
         showPanel()
@@ -166,6 +173,10 @@ final class CollapseOverlayWindowController: NSWindowController {
         contentView.appendDebugLine(line)
     }
 
+    func clearDebugLog() {
+        contentView.clearDebugLog()
+    }
+
     func sendModels(
         _ models: [String],
         selected: String,
@@ -182,6 +193,48 @@ final class CollapseOverlayWindowController: NSWindowController {
             geminiAPIKeyConfigured: geminiAPIKeyConfigured,
             geminiKeyWarning: geminiKeyWarning
         )
+    }
+
+    func setGeminiKeyWarning(_ visible: Bool) {
+        contentView.setGeminiKeyWarning(visible)
+    }
+
+    /// Brings the panel above other windows and shows the Keychain heads-up
+    /// notice before macOS is asked for interactive Keychain access.
+    func presentGeminiKeychainConsentPrompt(selectedModel: String) {
+        appendDebugLine(
+            "Gemini Keychain UI: present heads-up model=\(selectedModel) windowVisible=\(window?.isVisible ?? false) windowLevel=\(window?.level.rawValue ?? -1)"
+        )
+        contentView.prepareGeminiKeychainConsent(selectedModel: selectedModel)
+        guard let window else {
+            appendDebugLine("Gemini Keychain UI: present aborted — no window")
+            return
+        }
+
+        guard window.isVisible else {
+            appendDebugLine("Gemini Keychain UI: panel hidden — overlay state sent, waiting for panel to open")
+            return
+        }
+
+        if savedWindowLevel == nil {
+            savedWindowLevel = window.level
+        }
+        window.level = .modalPanel
+        appendDebugLine("Gemini Keychain UI: raised window to modalPanel (savedLevel=\(savedWindowLevel?.rawValue ?? -1))")
+        showPanel()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        appendDebugLine("Gemini Keychain UI: panel ordered front isKey=\(window.isKeyWindow)")
+    }
+
+    func restorePanelWindowLevel() {
+        guard let window, let savedWindowLevel else {
+            appendDebugLine("Gemini Keychain UI: restore window level skipped (no saved level)")
+            return
+        }
+        appendDebugLine("Gemini Keychain UI: restoring window level to \(savedWindowLevel.rawValue)")
+        window.level = savedWindowLevel
+        self.savedWindowLevel = nil
     }
 
     func updateModelPull(model: String, progress: Double, done: Bool, error: String?, statusText: String? = nil) {
@@ -283,9 +336,11 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     var onSetModel: ((String) -> Void)?
     var onSetGeminiAPIKey: ((String) -> Void)?
     var onPullModel: ((String) -> Void)?
+    var onDeleteModel: ((String) -> Void)?
     var onExecuteTool: ((AIResultTool) -> Void)?
     var onReady: (() -> Void)?
     var onDismissGeminiKeyWarning: (() -> Void)?
+    var onShowHistory: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         let contentController = WKUserContentController()
@@ -317,7 +372,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
             status: "",
             subtitle: "Reading selection",
             loadingPhase: "local",
-            debug: debug,
+            debug: mergedDebug(existing: state.debug, with: debug),
             toolMessage: "",
             items: [],
             summaries: nil
@@ -351,7 +406,6 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         usedWebSearch: Bool,
         cards: [AIResultCard],
         debug: String,
-        preserveExistingDebug: Bool = false,
         onBack: @escaping () -> Void
     ) {
         self.onBack = onBack
@@ -361,7 +415,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
             status: usedWebSearch ? "web" : formattedIntent(intent),
             subtitle: "",
             loadingPhase: "local",
-            debug: mergedDebug(existing: state.debug, with: debug, preserveExisting: preserveExistingDebug),
+            debug: mergedDebug(existing: state.debug, with: debug),
             toolMessage: "",
             items: cards.map(WebPanelItem.init(card:)),
             summaries: nil
@@ -403,13 +457,19 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         onBack = nil
         onSelectHistoryItem = onSelect
         historyRecordsByID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.summaryURL.path, $0) })
+        let debugText: String
+        if let debug, debug.isEmpty == false {
+            debugText = mergedDebug(existing: state.debug, with: debug)
+        } else {
+            debugText = state.debug
+        }
         state = state.replacing(
             view: "history",
             title: "Past Results",
             status: "\(summaries.count) saved",
             subtitle: "Past things Miku explained",
             loadingPhase: "local",
-            debug: debug ?? "History loaded from Application Support.",
+            debug: debugText,
             toolMessage: "",
             items: [],
             summaries: summaries.map(WebPanelSummary.init(record:))
@@ -418,14 +478,13 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     }
 
     func showMessage(_ message: String) {
-        onBack = nil
+        onBack = onShowHistory
         state = state.replacing(
             view: "message",
             title: "Miku Explains",
             status: "notice",
             subtitle: "",
             loadingPhase: "local",
-            debug: "",
             toolMessage: "",
             items: [
                 WebPanelItem(
@@ -479,17 +538,25 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     }
 
     func appendDebugLine(_ line: String) {
-        state = state.replacing(debug: mergedDebug(existing: state.debug, with: line, preserveExisting: true))
+        state = state.replacing(debug: mergedDebug(existing: state.debug, with: line))
         sendState()
     }
 
-    private func mergedDebug(existing: String, with line: String, preserveExisting: Bool) -> String {
-        guard preserveExisting else {
-            return line
+    func clearDebugLog() {
+        state = state.replacing(debug: "")
+        if webViewReady {
+            sendState()
+        }
+    }
+
+    private func mergedDebug(existing: String, with addition: String) -> String {
+        let additionText = addition.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard additionText.isEmpty == false else {
+            return existing
         }
 
         let existingText = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-        return existingText.isEmpty ? line : "\(existingText)\n\(line)"
+        return existingText.isEmpty ? additionText : "\(existingText)\n\(additionText)"
     }
 
     func sendModels(
@@ -515,6 +582,21 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     func updateModelPull(model: String, progress: Double, done: Bool, error: String?, statusText: String? = nil) {
         state = state.replacing(
             modelPull: WebPanelModelPull(model: model, progress: progress, done: done, error: error, statusText: statusText)
+        )
+        sendState()
+    }
+
+    func setGeminiKeyWarning(_ visible: Bool) {
+        appendDebugLine("Gemini Keychain UI: setGeminiKeyWarning visible=\(visible) webReady=\(webViewReady)")
+        state = state.replacing(geminiKeyWarning: visible)
+        sendState()
+    }
+
+    func prepareGeminiKeychainConsent(selectedModel: String) {
+        appendDebugLine("Gemini Keychain UI: prepare consent selectedModel=\(selectedModel) priorWarning=\(state.geminiKeyWarning)")
+        state = state.replacing(
+            selectedModel: selectedModel,
+            geminiKeyWarning: true
         )
         sendState()
     }
@@ -550,8 +632,10 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         case "back":
             if state.view == "shortcut" {
                 restoreStateBeforeShortcut()
+            } else if let onBack {
+                onBack()
             } else {
-                onBack?()
+                onShowHistory?()
             }
         case "openShortcutSettings":
             onOpenShortcutSettings?()
@@ -595,8 +679,16 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         case "pullModel":
             guard let model = body["model"] as? String else { return }
             onPullModel?(model)
+        case "deleteModel":
+            guard let model = body["model"] as? String else { return }
+            onDeleteModel?(model)
         case "dismissGeminiKeyWarning":
+            appendDebugLine("Gemini Keychain UI: React dismissed heads-up (continue tapped)")
             onDismissGeminiKeyWarning?()
+        case "logDebug":
+            if let message = body["message"] as? String {
+                appendDebugLine("React: \(message)")
+            }
         case "executeTool":
             guard let rawTool = body["tool"] as? [String: Any],
                   let tool = decodeTool(from: rawTool) else {
@@ -694,14 +786,22 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     }
 
     private func sendState() {
-        guard webViewReady,
-              let data = try? JSONEncoder().encode(state),
-              let json = String(data: data, encoding: .utf8) else {
-            return
+        let deliver = { @MainActor [self] in
+            guard webViewReady,
+                  let data = try? JSONEncoder().encode(state),
+                  let json = String(data: data, encoding: .utf8) else {
+                return
+            }
+
+            let script = "window.MikuPanel && window.MikuPanel.setState(\(json));"
+            webView.evaluateJavaScript(script)
         }
 
-        let script = "window.MikuPanel && window.MikuPanel.setState(\(json));"
-        webView.evaluateJavaScript(script)
+        if Thread.isMainThread {
+            deliver()
+        } else {
+            Task { @MainActor in deliver() }
+        }
     }
 
     private func decodeTool(from rawTool: [String: Any]) -> AIResultTool? {

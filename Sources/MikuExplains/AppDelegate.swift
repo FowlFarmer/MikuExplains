@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
 
     /// The currently selected model ID. "codex" means use Codex CLI;
-    /// `google:*` values use hosted Gemma through Google's Gemini API;
+    /// `google:*` values use hosted Google models through the Gemini API;
     /// other values are llama.cpp model tags (e.g. "qwen3:4b").
     private var activeModel: String = "codex" {
         didSet { saveModel(activeModel) }
@@ -36,16 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastCapturedText: String?
     private var shouldRevealCurrentSummary = true
     private var isShowingStreamingResult = false
-    /// Tri-state Keychain awareness: `nil` means we have not yet asked the
-    /// Keychain whether a Gemini API key is stored, so we deliberately do
-    /// not show the macOS "always allow" prompt at app launch. The first
-    /// time the user picks a hosted Gemma model (or saves/clears a key),
-    /// `AppDelegate` resolves the real value and starts sending it to React.
-    private var geminiAPIKeyConfigured: Bool? = nil
-    private var hasShownGeminiKeyWarning: Bool = false
+    private let geminiKeychain = GeminiKeychainCoordinator()
     private static let shortcutDefaultsKey = "MikuExplainsShortcut"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        overlayController.clearDebugLog()
+
         // Load persisted model selection.
         activeModel = loadModel()
 
@@ -68,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reap any orphan llama-server PID and stale pull state from a
         // previous (possibly crashed) run. Cheap when there's nothing to do.
         LlamaCppManager.shared.reapStaleState()
+        SummarizationLock().removeStaleLockIfNeeded()
 
         // Pre-warm the chosen local backend so the first inference doesn't
         // pay the cold-start penalty. llama.cpp's server stays running for
@@ -140,6 +137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.onPullModel = { [weak self] model in
             self?.handlePullModel(model)
         }
+        overlayController.onDeleteModel = { [weak self] model in
+            self?.handleDeleteModel(model)
+        }
         overlayController.onExecuteTool = { [weak self] tool in
             self?.handleExecuteTool(tool)
         }
@@ -147,7 +147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.sendModelsToPanel()
         }
         overlayController.onDismissGeminiKeyWarning = { [weak self] in
-            self?.acknowledgeGeminiKeyWarning()
+            self?.handleGeminiKeychainHeadsUpAcknowledged()
+        }
+        overlayController.onShowHistory = { [weak self] in
+            self?.showHistory()
         }
     }
 
@@ -242,6 +245,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginPipeline(for capture: CapturedText, lockAlreadyAcquired: Bool) {
+        if GeminiAPIModelRegistry.isHostedGeminiAPIModel(activeModel) {
+            requestGeminiKeyAccess { [weak self] result in
+                guard let self else {
+                    return
+                }
+                switch result {
+                case .ready:
+                    self.continueBeginPipeline(for: capture, lockAlreadyAcquired: lockAlreadyAcquired)
+                case .missingKey, .permissionDenied:
+                    if lockAlreadyAcquired {
+                        self.summaryPipeline.releaseReservedCapture()
+                    }
+                    self.shouldRevealCurrentSummary = false
+                    self.isShowingStreamingResult = false
+                    let modelName = GeminiAPIModelRegistry.info(for: self.activeModel)?.displayName ?? "Gemma"
+                    switch result {
+                    case .missingKey:
+                        self.overlayController.showMessage(
+                            "Add a Gemini API key in the model menu before using \(modelName)."
+                        )
+                        self.overlayController.appendDebugLine("Inference blocked: Gemini API key missing for \(self.activeModel).")
+                    case .permissionDenied:
+                        self.overlayController.showMessage(
+                            "Allow Keychain access for Miku Explains before using \(modelName)."
+                        )
+                        self.overlayController.appendDebugLine("Inference blocked: Gemini Keychain access denied for \(self.activeModel).")
+                    case .ready:
+                        break
+                    }
+                }
+            }
+            return
+        }
+
+        continueBeginPipeline(for: capture, lockAlreadyAcquired: lockAlreadyAcquired)
+    }
+
+    private func continueBeginPipeline(for capture: CapturedText, lockAlreadyAcquired: Bool) {
         lastCapturedText = capture.text
         shouldRevealCurrentSummary = true
         isShowingStreamingResult = false
@@ -318,7 +359,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 usedWebSearch: summary.usedWebSearch,
                 cards: summary.cards,
                 debug: "\(providerLabel) result saved: \(summary.summaryURL.path)",
-                preserveExistingDebug: true,
                 onBack: { [weak self] in self?.showHistory() }
             )
             return
@@ -330,7 +370,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 usedWebSearch: summary.usedWebSearch,
                 cards: summary.cards,
                 debug: "\(providerLabel) result saved: \(summary.summaryURL.path)",
-                preserveExistingDebug: true,
                 onBack: { [weak self] in self?.showHistory() }
             )
         }
@@ -338,7 +377,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handlePipelineFailed(_ error: CodexSummarizerError, providerLabel: String) {
         NSLog("Miku Explains %@ result failed: %@", providerLabel, error.localizedDescription)
+        shouldRevealCurrentSummary = false
+        isShowingStreamingResult = false
         overlayController.appendDebugLine("\(providerLabel) failed: \(error.localizedDescription)")
+        overlayController.showMessage(error.localizedDescription)
     }
 
     private func showHistory(debugLine: String? = nil) {
@@ -456,7 +498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if model == "codex"
             || LlamaCppManager.modelRegistry[model] != nil
-            || GeminiAPIModelRegistry.isGemmaAPIModel(model) {
+            || GeminiAPIModelRegistry.isHostedGeminiAPIModel(model) {
             return model
         }
 
@@ -469,58 +511,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func sendModelsToPanel() {
         let selected = activeModel
-        let isGemma = GeminiAPIModelRegistry.isGemmaAPIModel(selected)
-        let geminiKeyConfigured: Bool? = isGemma ? resolvedGeminiAPIKeyConfigured() : geminiAPIKeyConfigured
-        let geminiWarning = isGemma ? shouldShowGeminiKeyWarning(for: selected) : false
+        let isHostedGemini = GeminiAPIModelRegistry.isHostedGeminiAPIModel(selected)
+        let geminiKeyConfigured = geminiKeychain.panelKeyConfigured(isGemmaSelected: isHostedGemini)
+        let warning = geminiKeychain.isHeadsUpVisible
+
         LlamaCppManager.shared.listInstalledModels { [weak self] models in
-            self?.overlayController.sendModels(
+            guard let self else {
+                return
+            }
+
+            let configuredLabel = geminiKeyConfigured.map { $0 ? "true" : "false" } ?? "nil"
+            self.overlayController.appendDebugLine(
+                "Gemini panel sync: selected=\(selected) geminiAPIKeyConfigured=\(configuredLabel) geminiKeyWarning=\(warning) \(self.geminiKeychain.debugSnapshot())"
+            )
+            self.overlayController.sendModels(
                 models,
                 selected: selected,
                 localBackendAvailable: true,
                 modelCatalog: LlamaCppManager.shared.modelCatalog(),
                 geminiAPIKeyConfigured: geminiKeyConfigured,
-                geminiKeyWarning: geminiWarning
+                geminiKeyWarning: warning
             )
         }
     }
 
-    /// Returns the tri-state `geminiAPIKeyConfigured` value for the React
-    /// panel, expanding `nil` into a concrete answer only when we have to
-    /// touch the Keychain. The expansion is cached so we only ever prompt
-    /// the user once per app launch.
-    private func resolvedGeminiAPIKeyConfigured() -> Bool? {
-        if let cached = geminiAPIKeyConfigured {
-            return cached
-        }
-
-        if GeminiAPIKeyStore.shared.hasEnvironmentKey {
-            geminiAPIKeyConfigured = true
-            return true
-        }
-
-        geminiAPIKeyConfigured = GeminiAPIKeyStore.shared.hasConfiguredKey
-        return geminiAPIKeyConfigured
+    private func requestGeminiKeyAccess(completion: @escaping (GeminiKeyAccessResult) -> Void) {
+        geminiKeychain.requestAccess(
+            presentHeadsUp: { [weak self] in
+                guard let self else {
+                    return
+                }
+                self.overlayController.presentGeminiKeychainConsentPrompt(selectedModel: self.activeModel)
+                self.sendModelsToPanel()
+            },
+            log: { [weak self] line in
+                self?.overlayController.appendDebugLine(line)
+            },
+            completion: completion
+        )
     }
 
-    private func shouldShowGeminiKeyWarning(for model: String) -> Bool {
-        guard hasShownGeminiKeyWarning == false else {
-            return false
+    private func handleGeminiKeychainHeadsUpAcknowledged() {
+        let result = geminiKeychain.acknowledgeHeadsUp { [weak self] line in
+            self?.overlayController.appendDebugLine(line)
         }
-        guard GeminiAPIModelRegistry.isGemmaAPIModel(model) else {
-            return false
-        }
-        return resolvedGeminiAPIKeyConfigured() == false
-    }
+        overlayController.setGeminiKeyWarning(false)
+        overlayController.restorePanelWindowLevel()
 
-    private func acknowledgeGeminiKeyWarning() {
-        hasShownGeminiKeyWarning = true
+        switch result {
+        case .ready:
+            break
+        case .missingKey:
+            overlayController.appendDebugLine("No Gemini API key stored yet; paste one in the model menu.")
+        case .permissionDenied:
+            overlayController.showToolMessage("Could not unlock the Gemini API key from Keychain.")
+        }
+
+        sendModelsToPanel()
     }
 
     private func handleSetModel(_ model: String) {
         let canonicalModel = canonicalModelTag(for: model)
         guard canonicalModel == "codex"
             || LlamaCppManager.modelRegistry[canonicalModel] != nil
-            || GeminiAPIModelRegistry.isGemmaAPIModel(canonicalModel) else {
+            || GeminiAPIModelRegistry.isHostedGeminiAPIModel(canonicalModel) else {
             overlayController.showMessage("Unknown model: \(canonicalModel)")
             overlayController.appendDebugLine("Model switch ignored: unknown model \(canonicalModel)")
             return
@@ -529,11 +583,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         activeModel = canonicalModel
         if let info = GeminiAPIModelRegistry.info(for: canonicalModel) {
             overlayController.appendDebugLine("Switched to Google Gemini API model: \(info.displayName)")
-            if resolvedGeminiAPIKeyConfigured() == false {
-                overlayController.appendDebugLine("Gemini API key missing; add one in the model menu before using \(info.displayName).")
+            requestGeminiKeyAccess { [weak self] result in
+                guard let self else {
+                    return
+                }
+                switch result {
+                case .ready:
+                    break
+                case .missingKey:
+                    self.overlayController.appendDebugLine("Gemini API key missing; add one in the model menu before using \(info.displayName).")
+                case .permissionDenied:
+                    self.overlayController.showToolMessage("Could not unlock the Gemini API key from Keychain.")
+                }
+                self.sendModelsToPanel()
             }
         } else if canonicalModel != "codex" {
-            acknowledgeGeminiKeyWarning()
             overlayController.appendDebugLine("Switched to llama.cpp model: \(canonicalModel)")
             let modelPath = LlamaCppManager.shared.ggufFileURL(for: canonicalModel)
             if FileManager.default.fileExists(atPath: modelPath.path) {
@@ -544,21 +608,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 overlayController.appendDebugLine("Model not installed yet — pull it first")
             }
+            sendModelsToPanel()
         } else {
-            acknowledgeGeminiKeyWarning()
+            sendModelsToPanel()
         }
-        sendModelsToPanel()
     }
 
     private func handleSetGeminiAPIKey(_ apiKey: String) {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             try GeminiAPIKeyStore.shared.save(apiKey)
-            let isConfigured = GeminiAPIKeyStore.shared.hasConfiguredKey
-            geminiAPIKeyConfigured = isConfigured
-            acknowledgeGeminiKeyWarning()
-            overlayController.appendDebugLine(isConfigured ? "Gemini API key saved to Keychain." : "Gemini API key cleared from Keychain.")
-            overlayController.showToolMessage(isConfigured ? "Gemini API key saved." : "Gemini API key cleared.")
-            sendModelsToPanel()
+            if trimmed.isEmpty {
+                overlayController.appendDebugLine("Gemini API key cleared from Keychain.")
+                overlayController.showToolMessage("Gemini API key cleared.")
+                sendModelsToPanel()
+                return
+            }
+
+            overlayController.appendDebugLine("Gemini API key saved to Keychain.")
+            overlayController.showToolMessage("Gemini API key saved.")
+            requestGeminiKeyAccess { [weak self] result in
+                guard let self else {
+                    return
+                }
+                if case .permissionDenied = result {
+                    self.overlayController.showToolMessage("Could not unlock the Gemini API key from Keychain.")
+                }
+                self.sendModelsToPanel()
+            }
         } catch {
             overlayController.appendDebugLine("Gemini API key save failed: \(error.localizedDescription)")
             overlayController.showToolMessage(error.localizedDescription)
@@ -583,6 +660,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.appendDebugLine("Pull started: \(canonicalModel)")
 
         handlePullModelLlamaCpp(canonicalModel)
+    }
+
+    private func handleDeleteModel(_ model: String) {
+        let canonicalModel = canonicalModelTag(for: model)
+        guard LlamaCppManager.modelRegistry[canonicalModel] != nil else {
+            overlayController.showMessage("Unknown local model: \(canonicalModel)")
+            overlayController.appendDebugLine("Delete ignored: unknown llama.cpp model \(canonicalModel)")
+            return
+        }
+
+        guard activePullModel == nil else {
+            overlayController.appendDebugLine("Delete ignored: pull in progress for \(activePullModel!)")
+            return
+        }
+
+        switch LlamaCppManager.shared.deleteInstalledModel(canonicalModel) {
+        case .success:
+            overlayController.appendDebugLine("Deleted local model: \(canonicalModel)")
+            overlayController.showToolMessage("Deleted \(LlamaCppManager.modelRegistry[canonicalModel]?.displayName ?? canonicalModel).")
+            if activeModel == canonicalModel {
+                activeModel = "codex"
+                overlayController.appendDebugLine("Switched to Codex after deleting the active local model.")
+            }
+            sendModelsToPanel()
+        case .failure(let error):
+            overlayController.appendDebugLine("Delete failed: \(canonicalModel) — \(error.localizedDescription)")
+            overlayController.showToolMessage(error.localizedDescription)
+        }
     }
 
     private func canonicalModelTag(for model: String) -> String {

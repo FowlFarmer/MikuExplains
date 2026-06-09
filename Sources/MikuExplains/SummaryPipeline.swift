@@ -74,34 +74,46 @@ final class SummaryPipeline {
                 model: model,
                 callbacks: InferenceBackendCallbacks(
                     onProcessStarted: { [weak self] processIdentifier in
-                        self?.markProcess(processIdentifier)
-                        if processIdentifier > 0 {
-                            events.debug("\(providerLabel) PID: \(processIdentifier)")
-                        } else {
-                            events.debug("\(providerLabel) request sent")
+                        Task { @MainActor in
+                            self?.markProcess(processIdentifier)
+                            if processIdentifier > 0 {
+                                events.debug("\(providerLabel) PID: \(processIdentifier)")
+                            } else {
+                                events.debug("\(providerLabel) request sent")
+                            }
                         }
                     },
                     onWebSearchStarted: {
-                        events.webSearchStarted()
-                        events.debug("Entering web search verification phase...")
+                        Task { @MainActor in
+                            events.webSearchStarted()
+                            events.debug("Entering web search verification phase...")
+                        }
                     },
                     onThinkingStarted: {
-                        events.thinkingStarted()
+                        Task { @MainActor in
+                            events.thinkingStarted()
+                        }
                     },
                     onDebug: { message in
-                        events.debug(message)
+                        Task { @MainActor in
+                            events.debug(message)
+                        }
                     },
                     onPartialResult: { snapshot in
-                        events.partialResult(snapshot)
+                        Task { @MainActor in
+                            events.partialResult(snapshot)
+                        }
                     }
                 )
             ) { [weak self] result in
-                self?.releaseLock()
-                switch result {
-                case .success(let summary):
-                    events.completed(summary, providerLabel)
-                case .failure(let error):
-                    events.failed(error, providerLabel)
+                Task { @MainActor in
+                    self?.releaseLock()
+                    switch result {
+                    case .success(let summary):
+                        events.completed(summary, providerLabel)
+                    case .failure(let error):
+                        events.failed(error, providerLabel)
+                    }
                 }
             }
         } catch {

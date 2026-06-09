@@ -747,6 +747,35 @@ final class LlamaCppManager: @unchecked Sendable {
         }
     }
 
+    /// Removes a downloaded `model.gguf` for the given tag. Stops the
+    /// managed server first when that model is currently loaded.
+    func deleteInstalledModel(_ tag: String) -> Result<Void, LlamaCppError> {
+        guard Self.modelRegistry[tag] != nil else {
+            return .failure(.unknownModel(tag))
+        }
+
+        let ggufURL = ggufFileURL(for: tag)
+        guard fileManager.fileExists(atPath: ggufURL.path) else {
+            return .failure(.downloadFailed("Model not installed: \(tag)"))
+        }
+
+        if currentlyLoadedModelPath()?.standardizedFileURL.path == ggufURL.standardizedFileURL.path {
+            stopManagedServer()
+        }
+
+        do {
+            try fileManager.removeItem(at: ggufURL)
+            let directory = modelDirectory(for: tag)
+            if let contents = try? fileManager.contentsOfDirectory(atPath: directory.path),
+               contents.isEmpty {
+                try? fileManager.removeItem(at: directory)
+            }
+            return .success(())
+        } catch {
+            return .failure(.downloadFailed("Could not delete \(tag): \(error.localizedDescription)"))
+        }
+    }
+
     // MARK: - Model pulling
 
     /// Downloads a GGUF model from Hugging Face in a single shot. On

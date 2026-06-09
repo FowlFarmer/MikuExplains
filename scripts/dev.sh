@@ -68,6 +68,23 @@ remove_path() {
   fi
 }
 
+delete_keychain_item() {
+  local service="$1"
+  local account="$2"
+
+  if security delete-generic-password -s "$service" -a "$account" >/dev/null 2>&1; then
+    echo "  removed Keychain item service=$service account=$account"
+  fi
+}
+
+remove_gemini_keychain_items() {
+  echo "→ Removing Gemini API Keychain items..."
+  delete_keychain_item "$BUNDLE_ID" "GeminiAPIKey"
+  delete_keychain_item "$LEGACY_BUNDLE_ID" "GeminiAPIKey"
+  delete_keychain_item "$BUNDLE_ID" "GeminiAPIEncryptionKey"
+  delete_keychain_item "$LEGACY_BUNDLE_ID" "GeminiAPIEncryptionKey"
+}
+
 echo "→ Killing running instance..."
 pkill -x "MikuExplains" 2>/dev/null || true
 sleep 0.5
@@ -77,6 +94,8 @@ stop_managed_llama_server
 echo "→ Removing companion app state..."
 remove_path "$APP_SUPPORT"
 remove_path "$LEGACY_APP_SUPPORT"
+
+remove_gemini_keychain_items
 
 echo "→ Resetting saved defaults..."
 defaults delete "$BUNDLE_ID" 2>/dev/null || true
@@ -92,8 +111,9 @@ swift build
 echo "→ Packaging..."
 bash scripts/package_app.sh
 
-echo "→ Creating DMG..."
-bash scripts/create_dmg.sh
+# Turn this off to speed up dev
+# echo "→ Creating DMG..."
+# bash scripts/create_dmg.sh
 
 echo "→ Launching $APP..."
 open "$APP"

@@ -518,13 +518,19 @@ button:focus-visible {
   padding-top: 18px;
 }
 
+.result-scroll {
+  padding-top: 8px;
+}
+
 .answer-card {
   --card-bg: rgba(232, 255, 251, 0.9);
   --card-border: rgba(15, 198, 207, 0.46);
   --card-accent: #0fc6cf;
   --card-title: #08717b;
   --paper-polygon: polygon(0 7px, calc(100% - 8px) 0, 100% calc(100% - 7px), 7px 100%, 0 7px);
-  --outline-polygon: polygon(1px 8px, calc(100% - 10px) 1px, calc(100% - 1px) calc(100% - 8px), 9px calc(100% - 1px), 1px 8px);
+  --outline-radius: 18px 13px 20px 15px / 14px 18px 12px 17px;
+  --outline-inset: 6px 7px 7px 6px;
+  --outline-rotate: -0.22deg;
   --rail-polygon: polygon(0 0, 100% 5px, calc(100% - 1px) 100%, 0 calc(100% - 7px));
   position: relative;
   display: block;
@@ -542,13 +548,17 @@ button:focus-visible {
 
 .answer-card:nth-child(2n) {
   --paper-polygon: polygon(4px 0, 100% 6px, calc(100% - 7px) 100%, 0 calc(100% - 5px), 4px 0);
-  --outline-polygon: polygon(6px 1px, calc(100% - 2px) 7px, calc(100% - 9px) calc(100% - 1px), 1px calc(100% - 6px), 6px 1px);
+  --outline-radius: 16px 20px 14px 18px / 19px 13px 21px 15px;
+  --outline-inset: 7px 6px 6px 7px;
+  --outline-rotate: 0.18deg;
   --rail-polygon: polygon(1px 5px, 100% 0, 100% calc(100% - 6px), 0 100%);
 }
 
 .answer-card:nth-child(3n) {
   --paper-polygon: polygon(0 5px, calc(100% - 4px) 0, 100% 100%, 8px calc(100% - 3px), 0 5px);
-  --outline-polygon: polygon(2px 6px, calc(100% - 7px) 1px, calc(100% - 1px) calc(100% - 4px), 10px calc(100% - 4px), 2px 6px);
+  --outline-radius: 20px 14px 17px 19px / 15px 20px 13px 18px;
+  --outline-inset: 5px 8px 8px 5px;
+  --outline-rotate: -0.35deg;
   --rail-polygon: polygon(0 2px, calc(100% - 1px) 0, 100% 100%, 1px calc(100% - 4px));
 }
 
@@ -591,17 +601,19 @@ button:focus-visible {
 }
 
 .answer-outline {
-  inset: 4px 5px 5px 4px;
+  inset: var(--outline-inset);
   z-index: 1;
-  padding: 2px;
-  background: var(--card-border);
-  clip-path: var(--outline-polygon);
+  border: 2px solid var(--card-border);
+  border-radius: var(--outline-radius);
+  background: transparent;
   opacity: 0.96;
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
+  transform: rotate(var(--outline-rotate));
+  transition: border-color 180ms ease, opacity 180ms ease;
+}
+
+.stage.is-unfocused .answer-outline {
+  border-color: rgba(117, 145, 150, 0.28);
+  opacity: 0.82;
 }
 
 .answer-tape {
@@ -1037,6 +1049,7 @@ button:focus-visible {
   min-width: 0;
   margin-right: 2px;
   z-index: 100;
+  cursor: pointer;
 }
 
 .model-pill {
@@ -1046,6 +1059,7 @@ button:focus-visible {
   justify-content: flex-end;
   gap: 4px;
   max-width: min(188px, 100%);
+  width: 100%;
   height: 22px;
   min-width: 0;
   overflow: hidden;
@@ -1059,6 +1073,7 @@ button:focus-visible {
   line-height: 1;
   white-space: nowrap;
   transform: rotate(0.28deg);
+  pointer-events: none;
 }
 
 .model-pill span {
@@ -1083,14 +1098,14 @@ button:focus-visible {
   background: rgba(230, 224, 255, 0.72);
 }
 
-.model-pill:hover {
+.model-pill-wrap:hover .model-pill {
   border-color: rgba(169, 149, 255, 0.78);
   background: rgba(230, 224, 255, 0.72);
   box-shadow: 0 5px 12px rgba(169, 149, 255, 0.14);
   transform: translateY(-1px) rotate(0.8deg);
 }
 
-.model-pill:active {
+.model-pill-wrap:active .model-pill {
   box-shadow: none;
   transform: translateY(1px) rotate(0.28deg) scale(0.98);
 }
@@ -1127,7 +1142,7 @@ button:focus-visible {
   font-size: 12px;
   font-weight: 760;
   text-align: left;
-  cursor: default;
+  cursor: pointer;
   transition:
     transform 130ms ease,
     background-color 130ms ease,
@@ -1145,7 +1160,7 @@ button:focus-visible {
   font-weight: 950;
 }
 
-.model-row:disabled {
+.model-row.is-pulling {
   opacity: 0.8;
   cursor: not-allowed;
   transform: none;
@@ -1180,10 +1195,43 @@ button:focus-visible {
   font-size: 10px;
   font-weight: 850;
   white-space: nowrap;
+  pointer-events: none;
 }
 
 .model-row:hover .model-row-dl {
   background: rgba(169, 149, 255, 0.18);
+}
+
+.model-row-delete {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px dashed rgba(215, 38, 61, 0.42);
+  border-radius: 6px;
+  background: rgba(255, 245, 247, 0.72);
+  color: #b91c2c;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 850;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    transform 130ms ease,
+    background-color 130ms ease,
+    color 130ms ease;
+}
+
+.model-row:hover .model-row-delete {
+  background: rgba(255, 224, 230, 0.92);
+}
+
+.model-row-delete:hover {
+  transform: translateY(-1px);
+  color: #8a0d22;
+}
+
+.model-row-delete:active {
+  transform: translateY(0);
 }
 
 .model-row-right {
@@ -1384,12 +1432,36 @@ button:focus-visible {
   }
 }
 
-/* ── Apollo key warning (first Gemma pick) ─────────────────────── */
+/* ── Apollo key warning (Keychain Always Allow notice) ───────────── */
+
+.apollo-key-warning-overlay {
+  position: absolute;
+  inset: 136px 0 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px 18px;
+  pointer-events: none;
+  background: rgba(255, 244, 250, 0.42);
+}
+
+.apollo-key-warning-overlay-portal {
+  position: fixed;
+  inset: 136px 0 0;
+  z-index: 100000;
+}
+
+.apollo-key-warning-overlay .apollo-key-warning {
+  pointer-events: auto;
+  max-width: min(100%, 320px);
+  margin: 0;
+}
 
 .apollo-key-warning {
   position: relative;
   margin: 8px 6px 4px;
-  padding: 9px 10px 8px 12px;
+  padding: 9px 10px 8px 16px;
   border: 1.5px solid #d7263d;
   border-radius: 9px 13px 7px 12px / 11px 7px 13px 9px;
   background:
@@ -1399,7 +1471,7 @@ button:focus-visible {
       rgba(255, 232, 240, 0.94) 6px 12px
     );
   color: #8a0d22;
-  font-family: "Bradley Hand", "Marker Felt", "Comic Sans MS", "Segoe Print", cursive, system-ui;
+  font-family: ui-rounded, "SF Pro Rounded", "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
   font-size: 11.5px;
   font-weight: 800;
   line-height: 1.25;

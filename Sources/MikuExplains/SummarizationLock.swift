@@ -43,6 +43,18 @@ final class SummarizationLock: @unchecked Sendable {
         self.staleInterval = staleInterval
     }
 
+    /// Removes a leftover lock file when the owning process is gone or the
+    /// lock is older than the stale interval. Safe to call at app launch.
+    func removeStaleLockIfNeeded() {
+        guard let lockURL = try? lockFileURL(),
+              let record = readRecord(from: lockURL),
+              isStale(record) else {
+            return
+        }
+
+        try? fileManager.removeItem(at: lockURL)
+    }
+
     func acquire() throws -> SummarizationLockToken {
         let lockURL = try lockFileURL()
         try fileManager.createDirectory(
