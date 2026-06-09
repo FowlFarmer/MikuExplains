@@ -213,8 +213,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             break
         case .failure(let error):
             NSLog("Miku Explains summarization lock blocked shortcut: %@", error.localizedDescription)
-            overlayController.showMessage(error.localizedDescription)
             overlayController.appendDebugLine("Shortcut ignored: \(error.localizedDescription)")
+            if case .alreadyRunning = error, summaryPipeline.isRunning {
+                return
+            }
+            overlayController.showMessage(error.localizedDescription)
             return
         }
 
@@ -290,6 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlayController.showLoading(
             title: "Summarizing",
             debug: "",
+            loadingPhase: GeminiAPIModelRegistry.isHostedGeminiAPIModel(activeModel) ? "hosted" : "local",
             onBack: { [weak self] in self?.showHistory() }
         )
         summaryPipeline.run(
@@ -363,6 +367,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             return
         }
+        if GeminiAPIModelRegistry.isHostedGeminiAPIModel(activeModel) {
+            overlayController.showResult(
+                title: summary.tagline,
+                intent: summary.primaryIntent,
+                usedWebSearch: summary.usedWebSearch,
+                cards: summary.cards,
+                debug: "\(providerLabel) result saved: \(summary.summaryURL.path)",
+                onBack: { [weak self] in self?.showHistory() }
+            )
+            return
+        }
         overlayController.completeLoading {
             self.overlayController.showResult(
                 title: summary.tagline,
@@ -377,9 +392,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handlePipelineFailed(_ error: CodexSummarizerError, providerLabel: String) {
         NSLog("Miku Explains %@ result failed: %@", providerLabel, error.localizedDescription)
+        overlayController.appendDebugLine("\(providerLabel) failed: \(error.localizedDescription)")
+
+        if case .alreadyRunning = error {
+            if summaryPipeline.isRunning {
+                return
+            }
+            overlayController.showMessage(error.localizedDescription)
+            return
+        }
+
         shouldRevealCurrentSummary = false
         isShowingStreamingResult = false
-        overlayController.appendDebugLine("\(providerLabel) failed: \(error.localizedDescription)")
         overlayController.showMessage(error.localizedDescription)
     }
 

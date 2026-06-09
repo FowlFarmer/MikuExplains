@@ -32,8 +32,13 @@ final class SummaryPipeline {
         activeLockToken != nil
     }
 
-    func reserveForCapture() -> Result<Void, Error> {
-        acquireLock()
+    func reserveForCapture() -> Result<Void, CodexSummarizerError> {
+        switch acquireLock() {
+        case .success:
+            return .success(())
+        case .failure(let error):
+            return .failure(mapAcquireError(error))
+        }
     }
 
     func releaseReservedCapture() {
@@ -51,7 +56,7 @@ final class SummaryPipeline {
             case .success:
                 break
             case .failure(let error):
-                events.failed(.saveFailed(error.localizedDescription), providerLabel(for: model))
+                events.failed(mapAcquireError(error), providerLabel(for: model))
                 return
             }
         }
@@ -137,6 +142,18 @@ final class SummaryPipeline {
         } catch {
             return .failure(error)
         }
+    }
+
+    private func mapAcquireError(_ error: Error) -> CodexSummarizerError {
+        if error is SummarizationPipelineError {
+            return .alreadyRunning
+        }
+
+        if let lockError = error as? SummarizationLockError, case .alreadyRunning = lockError {
+            return .alreadyRunning
+        }
+
+        return .saveFailed(error.localizedDescription)
     }
 
     private func releaseLock() {

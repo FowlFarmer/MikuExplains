@@ -410,7 +410,9 @@
   function labelForView(state) {
     if (state.subtitle) return state.subtitle;
     if (state.view === "loading") {
-      return state.loadingPhase === "web" ? "checking the outside world" : "reading what you selected";
+      if (state.loadingPhase === "web") return "checking the outside world";
+      if (state.loadingPhase === "hosted") return "waiting on the hosted model";
+      return "reading what you selected";
     }
     if (state.view === "history") return "previous explanations";
     if (state.view === "result") return "what Miku thinks you wanted";
@@ -421,7 +423,11 @@
   function statusForState(state) {
     if (state.status) return state.status;
     if (state.view === "history") return `${(state.summaries || []).length} saved`;
-    if (state.view === "loading") return state.loadingPhase === "web" ? "web" : "thinking";
+    if (state.view === "loading") {
+      if (state.loadingPhase === "web") return "web";
+      if (state.loadingPhase === "hosted") return "hosted";
+      return "thinking";
+    }
     return "";
   }
 
@@ -737,15 +743,18 @@
 
     React.useEffect(() => {
       setFakeThinking(false);
-      if (state.loadingPhase === "web" || state.loadingPhase === "thinking") {
+      if (state.loadingPhase !== "local") {
+        return undefined;
+      }
+      if (state.loadingCompleteToken > 0) {
         return undefined;
       }
 
       const timeout = window.setTimeout(() => setFakeThinking(true), 3000);
       return () => window.clearTimeout(timeout);
-    }, [state.loadingPhase, state.title]);
+    }, [state.loadingPhase, state.title, state.loadingCompleteToken]);
 
-    if (state.loadingPhase === "thinking" || fakeThinking) {
+    if (state.loadingPhase === "thinking" || (fakeThinking && state.loadingCompleteToken === 0)) {
       return h(
         "div",
         { className: "scroll result-scroll" },
@@ -757,7 +766,8 @@
   }
 
   function LoadingMeterPage({ state }) {
-    const phase = state.loadingPhase === "web" ? "web" : "local";
+    const phase =
+      state.loadingPhase === "web" ? "web" : state.loadingPhase === "hosted" ? "hosted" : "local";
     const [progress, setProgress] = React.useState(0);
 
     React.useEffect(() => {
@@ -767,7 +777,7 @@
 
       function tick(now) {
         const elapsed = now - start;
-        const divisor = phase === "web" ? 2450 : 3200;
+        const divisor = phase === "web" ? 2450 : phase === "hosted" ? 5200 : 3200;
         setProgress(Math.min(0.96, 1 - Math.exp(-elapsed / divisor)));
         frame = requestAnimationFrame(tick);
       }
@@ -794,7 +804,8 @@
     }, [state.loadingCompleteToken]);
 
     const percent = Math.round(progress * 100);
-    const caption = phase === "web" ? "searching web" : "reading";
+    const caption =
+      phase === "web" ? "searching web" : phase === "hosted" ? "waiting on model" : "reading";
 
     return h(
       "div",

@@ -94,8 +94,8 @@ final class CollapseOverlayWindowController: NSWindowController {
         NotificationCenter.default.removeObserver(self)
     }
 
-    func showLoading(title: String, debug: String, onBack: @escaping () -> Void) {
-        contentView.showLoading(title: title, debug: debug, onBack: onBack)
+    func showLoading(title: String, debug: String, loadingPhase: String = "local", onBack: @escaping () -> Void) {
+        contentView.showLoading(title: title, debug: debug, loadingPhase: loadingPhase, onBack: onBack)
         showPanel()
     }
 
@@ -364,14 +364,14 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         nil
     }
 
-    func showLoading(title: String, debug: String, onBack: @escaping () -> Void) {
+    func showLoading(title: String, debug: String, loadingPhase: String = "local", onBack: @escaping () -> Void) {
         self.onBack = onBack
         state = state.replacing(
             view: "loading",
             title: title,
             status: "",
             subtitle: "Reading selection",
-            loadingPhase: "local",
+            loadingPhase: loadingPhase,
             debug: mergedDebug(existing: state.debug, with: debug),
             toolMessage: "",
             items: [],
@@ -395,7 +395,8 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         state = state.replacing(loadingCompleteToken: state.loadingCompleteToken + 1)
         sendState()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 320_000_000)
             completion()
         }
     }

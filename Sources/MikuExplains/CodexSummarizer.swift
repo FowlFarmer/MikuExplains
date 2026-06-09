@@ -7,6 +7,7 @@ enum CodexSummarizerError: LocalizedError {
     case unreadableOutput(String)
     case invalidOutput(String)
     case saveFailed(String)
+    case alreadyRunning
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,8 @@ enum CodexSummarizerError: LocalizedError {
             return "The AI backend returned an invalid result format: \(output)"
         case .saveFailed(let message):
             return "Could not save AI result: \(message)"
+        case .alreadyRunning:
+            return "Already summarizing. Wait for the current summary to finish."
         }
     }
 }
