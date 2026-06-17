@@ -58,7 +58,7 @@
 
   const HOSTED_GEMINI_API_MODELS = [
     { id: "google:gemma-4-26b-a4b-it", label: "Gemma 4 MoE", tag: null, provider: "google", size: null, speed: "api" },
-    { id: "google:gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", tag: null, provider: "google", size: null, speed: "api" },
+    { id: "google:gemini-3.1-flash-lite", label: "Gemini 3.1 FL", tag: null, provider: "google", size: null, speed: "api" },
   ];
 
   function modelShortLabel(modelId, state) {
@@ -89,6 +89,7 @@
     const [apiKeyDraft, setApiKeyDraft] = React.useState("");
     const apiInputRef = React.useRef(null);
     const btnRef = React.useRef(null);
+    const pendingHostedSelectionRef = React.useRef(null);
     const [dropRect, setDropRect] = React.useState(null);
     const openedAtRef = React.useRef(0);
     const ignoreOutsideUntilRef = React.useRef(0);
@@ -96,13 +97,21 @@
     const geminiConfigured = state.geminiAPIKeyConfigured === true;
     const geminiKeyMissing = state.geminiAPIKeyConfigured === false;
     const geminiKeyLocked = state.geminiAPIKeyConfigured == null;
+    const showGeminiKeyForm = String(state.selectedModel || "").startsWith("google:");
 
     React.useEffect(() => {
       if (!open) return;
       function onOutside(e) {
         if (Date.now() < ignoreOutsideUntilRef.current) return;
-        if (!e.target.closest(".model-dropdown") && !e.target.closest(".model-pill-wrap")) {
-          setOpen(false);
+        const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+        const pathHas = (className) => path.some((node) => (
+          node && node.classList && node.classList.contains(className)
+        ));
+        const target = e.target instanceof Element ? e.target : null;
+        const isInsideDropdown = pathHas("model-dropdown") || !!target?.closest(".model-dropdown");
+        const isInsidePill = pathHas("model-pill-wrap") || !!target?.closest(".model-pill-wrap");
+        if (!isInsideDropdown && !isInsidePill) {
+          closeDropdown();
         }
       }
       document.addEventListener("mousedown", onOutside);
@@ -112,9 +121,25 @@
     React.useEffect(() => {
       if (state.geminiKeyWarning) {
         sendDebug("ModelPill: closing dropdown because geminiKeyWarning=true");
-        setOpen(false);
+        closeDropdown();
       }
     }, [state.geminiKeyWarning]);
+
+    React.useEffect(() => {
+      const pendingModel = pendingHostedSelectionRef.current;
+      if (!open || !pendingModel || state.selectedModel !== pendingModel) return;
+
+      if (geminiConfigured) {
+        pendingHostedSelectionRef.current = null;
+        setOpen(false);
+        return;
+      }
+
+      if (geminiKeyMissing && showGeminiKeyForm) {
+        pendingHostedSelectionRef.current = null;
+        window.setTimeout(() => apiInputRef.current?.focus(), 0);
+      }
+    }, [open, state.selectedModel, geminiConfigured, geminiKeyMissing, showGeminiKeyForm]);
 
     function openDropdown() {
       if (btnRef.current) {
@@ -126,11 +151,16 @@
       setOpen(true);
     }
 
+    function closeDropdown() {
+      pendingHostedSelectionRef.current = null;
+      setOpen(false);
+    }
+
     function handleToggle() {
       if (open) {
         // Fast double-click after focus (first click opens, second closes) — ignore.
         if (Date.now() - openedAtRef.current < 400) return;
-        setOpen(false);
+        closeDropdown();
         return;
       }
       openDropdown();
@@ -150,22 +180,32 @@
     function handleSelectOrPull(preset) {
       if (preset.id === "codex") {
         send("setModel", { model: "codex" });
-        setOpen(false);
+        closeDropdown();
         return;
       }
       if (preset.provider === "google") {
         sendDebug(`ModelPill: Gemma row selected id=${preset.id} geminiAPIKeyConfigured=${state.geminiAPIKeyConfigured}`);
         send("setModel", { model: preset.id });
-        setOpen(false);
+        if (state.geminiAPIKeyConfigured === true) {
+          closeDropdown();
+        } else {
+          pendingHostedSelectionRef.current = preset.id;
+          ignoreOutsideUntilRef.current = Date.now() + 400;
+          setOpen(true);
+        }
         return;
       }
       if (isInstalled(preset.tag)) {
         send("setModel", { model: preset.id });
-        setOpen(false);
+        closeDropdown();
       } else {
         send("pullModel", { model: preset.id });
         // keep open so user can see progress
       }
+    }
+
+    function keepDropdownOpen(event) {
+      event.stopPropagation();
     }
 
     const rows = modelCatalog.map((preset) => {
@@ -247,7 +287,6 @@
         rightSlot
       );
     });
-    const showGeminiKeyForm = String(state.selectedModel || "").startsWith("google:");
     // Portal: render the dropdown directly on document.body so it escapes
     // every stacking context (transforms, filters on shell/sticker/cards).
     const dropdown = open && dropRect
@@ -261,7 +300,10 @@
                 top: dropRect.bottom + 5,
                 right: window.innerWidth - dropRect.right,
                 zIndex: 99999
-              }
+              },
+              onPointerDown: keepDropdownOpen,
+              onMouseDown: keepDropdownOpen,
+              onClick: keepDropdownOpen
             },
             state.localBackendAvailable === false
               ? h("div", { className: "model-no-local" }, "Local backend not ready — llama-server will download on first model pull")
@@ -271,8 +313,12 @@
               "form",
               {
                 className: "gemini-key-form",
+                onPointerDown: keepDropdownOpen,
+                onMouseDown: keepDropdownOpen,
+                onClick: keepDropdownOpen,
                 onSubmit: (event) => {
                   event.preventDefault();
+                  event.stopPropagation();
                   const apiKey = (apiInputRef.current?.value || apiKeyDraft || "").trim();
                   if (!apiKey) return;
                   send("setGeminiAPIKey", { apiKey });
@@ -355,25 +401,25 @@
     );
   }
 
-  function ApolloKeyWarning({ onDismiss }) {
+  function GeminiKeyWarning({ onDismiss }) {
     React.useEffect(() => {
-      sendDebug("ApolloKeyWarning: overlay mounted in body portal");
-      return () => sendDebug("ApolloKeyWarning: overlay unmounted");
+      sendDebug("GeminiKeyWarning: overlay mounted in body portal");
+      return () => sendDebug("GeminiKeyWarning: overlay unmounted");
     }, []);
 
     return h(
       "div",
-      { className: "apollo-key-warning", role: "status" },
-      h("div", { className: "apollo-key-warning-note" },
-        h("span", { className: "apollo-key-warning-head" }, "heads up!"),
-        h("p", null, "This key is saved to your macOS Keychain."),
-        h("p", null, "When the system asks, press ", h("strong", null, "Always Allow"), " so Miku can read it later without re-asking you.")
+      { className: "gemini-key-warning", role: "status" },
+      h("div", { className: "gemini-key-warning-note" },
+        h("span", { className: "gemini-key-warning-head" }, "keychain note"),
+        h("p", null, "Your Gemini API key is stored in macOS Keychain."),
+        h("p", null, "When macOS asks, press ", h("strong", null, "Always Allow"), " so Miku can use it without bugging you again.")
       ),
         h("button", {
         type: "button",
-        className: "apollo-key-warning-dismiss",
+        className: "gemini-key-warning-dismiss",
         onClick: () => {
-          sendDebug("ApolloKeyWarning: got it clicked");
+          sendDebug("GeminiKeyWarning: got it clicked");
           onDismiss();
         }
       }, "got it")
@@ -488,10 +534,10 @@
           h(
             "div",
             {
-              className: "apollo-key-warning-overlay apollo-key-warning-overlay-portal",
+              className: "gemini-key-warning-overlay gemini-key-warning-overlay-portal",
               style: { zIndex: 100000 }
             },
-            h(ApolloKeyWarning, {
+            h(GeminiKeyWarning, {
               onDismiss: () => send("dismissGeminiKeyWarning")
             })
           ),
@@ -585,11 +631,16 @@
     const [sent, setSent] = React.useState(false);
     const tool = item.tool || null;
     const toolLabel = tool && (tool.label || defaultToolLabel(tool.name));
+    const showsAccessibilityPermission = isAccessibilityPermissionNote(item);
 
     function handleToolClick() {
       if (!tool) return;
       setSent(true);
       send("executeTool", { tool });
+    }
+
+    function handleAccessibilityPermissionClick() {
+      send("requestAccessibilityPermission");
     }
 
     return h(
@@ -619,6 +670,18 @@
               },
               sent ? "sent" : toolLabel
             )
+          : null,
+        showsAccessibilityPermission
+          ? h(
+              "button",
+              {
+                type: "button",
+                className: "tool-action permission-action",
+                onClick: handleAccessibilityPermissionClick,
+                title: "Request copy permission"
+              },
+              "request copy permission"
+            )
           : null
       )
     );
@@ -628,6 +691,12 @@
     if (name === "calendar.create_event") return "Add to Calendar";
     if (name === "reminders.create_reminder") return "Add Reminder";
     return "Accept";
+  }
+
+  function isAccessibilityPermissionNote(item) {
+    const body = String(item?.body || "");
+    return body.includes("Accessibility permission is required") &&
+      body.includes("Privacy & Security > Accessibility");
   }
 
   function ResultsPage({ state }) {

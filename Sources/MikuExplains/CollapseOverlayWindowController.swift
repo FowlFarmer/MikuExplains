@@ -18,6 +18,7 @@ final class CollapseOverlayWindowController: NSWindowController {
     var onReady: (() -> Void)?
     var onDismissGeminiKeyWarning: (() -> Void)?
     var onShowHistory: (() -> Void)?
+    var onRequestAccessibilityPermission: (() -> Void)?
 
     init() {
         let window = CollapsePanelWindow(
@@ -83,6 +84,9 @@ final class CollapseOverlayWindowController: NSWindowController {
         }
         contentView.onShowHistory = { [weak self] in
             self?.onShowHistory?()
+        }
+        contentView.onRequestAccessibilityPermission = { [weak self] in
+            self?.onRequestAccessibilityPermission?()
         }
     }
 
@@ -330,6 +334,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     private var stateBeforeShortcut: WebPanelState?
     private var onBack: (() -> Void)?
     private var onSelectHistoryItem: ((SummaryRecord) -> Void)?
+    private var toolMessageToken = 0
     var onClose: (() -> Void)?
     var onOpenShortcutSettings: (() -> Void)?
     var onRecordShortcut: ((ShortcutKeyboardEvent) -> Void)?
@@ -341,6 +346,7 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     var onReady: (() -> Void)?
     var onDismissGeminiKeyWarning: (() -> Void)?
     var onShowHistory: (() -> Void)?
+    var onRequestAccessibilityPermission: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         let contentController = WKUserContentController()
@@ -603,8 +609,25 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
     }
 
     func showToolMessage(_ message: String) {
+        toolMessageToken += 1
+        let token = toolMessageToken
         state = state.replacing(toolMessage: message)
         sendState()
+
+        guard message.isEmpty == false else {
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self,
+                  self.toolMessageToken == token,
+                  self.state.toolMessage == message else {
+                return
+            }
+
+            self.state = self.state.replacing(toolMessage: "")
+            self.sendState()
+        }
     }
 
     func updateFocus(_ isFocused: Bool) {
@@ -686,6 +709,9 @@ private final class WebPanelView: NSView, WKNavigationDelegate, WKScriptMessageH
         case "dismissGeminiKeyWarning":
             appendDebugLine("Gemini Keychain UI: React dismissed heads-up (continue tapped)")
             onDismissGeminiKeyWarning?()
+        case "requestAccessibilityPermission":
+            appendDebugLine("React requested Accessibility copy permission prompt.")
+            onRequestAccessibilityPermission?()
         case "logDebug":
             if let message = body["message"] as? String {
                 appendDebugLine("React: \(message)")
@@ -1024,6 +1050,9 @@ private struct WebPanelModelPreset: Encodable {
 enum StatusIconFactory {
     static func mikuIcon() -> NSImage {
         if let image = assetImage(named: "miku_crop") {
+            guard image.isValid, image.representations.isEmpty == false else {
+                return fallbackMikuIcon()
+            }
             image.size = NSSize(width: 18, height: 18)
             image.isTemplate = false
             return image

@@ -253,9 +253,10 @@ button:focus-visible {
 }
 
 .toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content max-content max-content max-content;
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
   height: 24px;
   min-width: 0;
   justify-content: flex-end;
@@ -763,6 +764,14 @@ button:focus-visible {
   box-shadow: none;
 }
 
+.permission-action {
+  border-color: rgba(15, 198, 207, 0.62);
+  color: var(--miku-deep);
+  background:
+    linear-gradient(96deg, rgba(255, 255, 255, 0.36), transparent 55%),
+    rgba(232, 255, 251, 0.82);
+}
+
 .type-definition,
 .type-glossary,
 .type-note {
@@ -1044,25 +1053,27 @@ button:focus-visible {
 .model-pill-wrap {
   position: relative;
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   justify-content: flex-end;
-  min-width: 0;
-  margin-right: 2px;
+  justify-self: end;
+  min-width: max-content;
+  max-width: none;
+  margin-right: 0;
   z-index: 100;
   cursor: pointer;
 }
 
 .model-pill {
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-  max-width: min(188px, 100%);
-  width: 100%;
+  max-width: none;
+  width: auto;
   height: 22px;
-  min-width: 0;
-  overflow: hidden;
+  min-width: max-content;
+  overflow: visible;
   border: 1px dashed rgba(169, 149, 255, 0.52);
   border-radius: 10px 7px 11px 8px / 7px 11px 8px 10px;
   padding: 0 7px;
@@ -1077,20 +1088,21 @@ button:focus-visible {
 }
 
 .model-pill span {
+  flex: 0 0 auto;
   color: #8070c0;
   font-weight: 760;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .model-pill strong {
   color: #2a1a6e;
   font-weight: 950;
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .model-pill.is-open {
@@ -1432,9 +1444,9 @@ button:focus-visible {
   }
 }
 
-/* ── Apollo key warning (Keychain Always Allow notice) ───────────── */
+/* ── Gemini key warning (Keychain Always Allow notice) ───────────── */
 
-.apollo-key-warning-overlay {
+.gemini-key-warning-overlay {
   position: absolute;
   inset: 136px 0 0;
   z-index: 500;
@@ -1446,19 +1458,19 @@ button:focus-visible {
   background: rgba(255, 244, 250, 0.42);
 }
 
-.apollo-key-warning-overlay-portal {
+.gemini-key-warning-overlay-portal {
   position: fixed;
   inset: 136px 0 0;
   z-index: 100000;
 }
 
-.apollo-key-warning-overlay .apollo-key-warning {
+.gemini-key-warning-overlay .gemini-key-warning {
   pointer-events: auto;
   max-width: min(100%, 320px);
   margin: 0;
 }
 
-.apollo-key-warning {
+.gemini-key-warning {
   position: relative;
   margin: 8px 6px 4px;
   padding: 9px 10px 8px 16px;
@@ -1481,10 +1493,10 @@ button:focus-visible {
     2px 3px 0 rgba(138, 13, 34, 0.16);
   transform: rotate(-0.65deg);
   transform-origin: 30% 50%;
-  animation: apollo-warning-wobble 2.4s ease-in-out infinite;
+  animation: gemini-warning-wobble 2.4s ease-in-out infinite;
 }
 
-.apollo-key-warning::before {
+.gemini-key-warning::before {
   content: "";
   position: absolute;
   left: 6px;
@@ -1496,7 +1508,7 @@ button:focus-visible {
   box-shadow: 0 0 4px rgba(215, 38, 61, 0.45);
 }
 
-.apollo-key-warning-head {
+.gemini-key-warning-head {
   display: inline-block;
   margin-bottom: 4px;
   padding: 1px 6px;
@@ -1510,7 +1522,7 @@ button:focus-visible {
   letter-spacing: 0.08em;
 }
 
-.apollo-key-warning p {
+.gemini-key-warning p {
   margin: 2px 0 0;
   color: #8a0d22;
   font-size: 11.5px;
@@ -1518,11 +1530,11 @@ button:focus-visible {
   text-shadow: 0 0 0 transparent;
 }
 
-.apollo-key-warning p + p {
+.gemini-key-warning p + p {
   margin-top: 2px;
 }
 
-.apollo-key-warning strong {
+.gemini-key-warning strong {
   color: #b91c2c;
   font-weight: 950;
   background: rgba(255, 255, 255, 0.55);
@@ -1534,7 +1546,7 @@ button:focus-visible {
   font-size: 10.5px;
 }
 
-.apollo-key-warning-dismiss {
+.gemini-key-warning-dismiss {
   display: inline-flex;
   align-items: center;
   margin-top: 6px;
@@ -1552,16 +1564,16 @@ button:focus-visible {
   transition: transform 130ms ease, background-color 130ms ease;
 }
 
-.apollo-key-warning-dismiss:hover {
+.gemini-key-warning-dismiss:hover {
   background: #ffe0e6;
   transform: translateY(-1px) rotate(0.4deg);
 }
 
-.apollo-key-warning-dismiss:active {
+.gemini-key-warning-dismiss:active {
   transform: translateY(1px) rotate(-0.2deg);
 }
 
-@keyframes apollo-warning-wobble {
+@keyframes gemini-warning-wobble {
   0%, 100% {
     transform: rotate(-0.65deg);
   }
@@ -1571,7 +1583,7 @@ button:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .apollo-key-warning {
+  .gemini-key-warning {
     animation: none;
   }
 }

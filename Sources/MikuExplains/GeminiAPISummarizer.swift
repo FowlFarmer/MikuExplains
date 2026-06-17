@@ -15,7 +15,7 @@ enum GeminiAPIModelRegistry {
         ),
         "google:gemini-3.1-flash-lite": .init(
             apiModel: "gemini-3.1-flash-lite",
-            displayName: "Gemini 3.1 Flash Lite",
+            displayName: "Gemini 3.1 FL",
             supportsExplicitContextCaching: true
         )
     ]

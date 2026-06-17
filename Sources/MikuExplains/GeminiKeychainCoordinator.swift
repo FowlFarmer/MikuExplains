@@ -12,6 +12,7 @@ enum GeminiKeyAccessResult {
 final class GeminiKeychainCoordinator {
     private let store: GeminiAPIKeyStore
     private(set) var isHeadsUpVisible = false
+    private(set) var hasStartedKeychainFlow = false
     private var pendingCompletions: [(GeminiKeyAccessResult) -> Void] = []
 
     init(store: GeminiAPIKeyStore = .shared) {
@@ -21,6 +22,10 @@ final class GeminiKeychainCoordinator {
     func panelKeyConfigured(isGemmaSelected: Bool) -> Bool? {
         guard isGemmaSelected else {
             return nil
+        }
+
+        guard hasStartedKeychainFlow else {
+            return store.hasEnvironmentKey ? true : nil
         }
 
         switch store.accessState() {
@@ -35,14 +40,17 @@ final class GeminiKeychainCoordinator {
         }
     }
 
-    func debugSnapshot() -> String {
-        let state = store.accessState()
+    func debugSnapshot(probeKeychain: Bool) -> String {
+        let shouldProbe = probeKeychain || hasStartedKeychainFlow
+        let stateLabel = shouldProbe ? store.accessState().debugLabel : "deferred"
+        let storeSummary = shouldProbe ? store.debugSummary() : "source=deferred"
         return [
-            "state=\(state.debugLabel)",
+            "state=\(stateLabel)",
             "headsUp=\(isHeadsUpVisible)",
+            "started=\(hasStartedKeychainFlow)",
             "pending=\(pendingCompletions.count)",
             "envKey=\(store.hasEnvironmentKey)",
-            store.debugSummary()
+            storeSummary
         ].joined(separator: " ")
     }
 
@@ -52,8 +60,9 @@ final class GeminiKeychainCoordinator {
         log: (String) -> Void,
         completion: @escaping (GeminiKeyAccessResult) -> Void
     ) {
+        hasStartedKeychainFlow = true
         let state = store.accessState()
-        log("Gemini Keychain requestAccess state=\(state.debugLabel) \(debugSnapshot())")
+        log("Gemini Keychain requestAccess state=\(state.debugLabel) \(debugSnapshot(probeKeychain: true))")
 
         switch state {
         case .available:

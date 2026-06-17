@@ -89,9 +89,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = StatusIconFactory.mikuIcon()
-        item.button?.imagePosition = .imageOnly
-        item.button?.toolTip = "Miku Explains"
+        item.isVisible = true
+
+        let icon = StatusIconFactory.mikuIcon()
+        if let button = item.button {
+            button.image = icon
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
+            button.isEnabled = true
+            button.toolTip = "Miku Explains"
+        }
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(
@@ -119,6 +126,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.items.forEach { $0.target = self }
         item.menu = menu
         statusItem = item
+
+        NSLog(
+            "Miku Explains status item configured: button=%@ imageSize=%@ reps=%d visible=%@",
+            item.button == nil ? "nil" : "ok",
+            NSStringFromSize(icon.size),
+            icon.representations.count,
+            item.isVisible ? "true" : "false"
+        )
+        overlayController.appendDebugLine(
+            "Tray icon configured: button=\(item.button == nil ? "nil" : "ok") imageSize=\(NSStringFromSize(icon.size)) reps=\(icon.representations.count)"
+        )
     }
 
     private func configureOverlayCallbacks() {
@@ -151,6 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         overlayController.onShowHistory = { [weak self] in
             self?.showHistory()
+        }
+        overlayController.onRequestAccessibilityPermission = { [weak self] in
+            self?.requestAccessibilityPermission()
         }
     }
 
@@ -240,6 +261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch textReader.readSelectedText() {
         case .success(let capture):
             beginPipeline(for: capture, lockAlreadyAcquired: true)
+        case .failure(.permissionRequired):
+            NSLog("Miku Explains capture failed: %@", SelectedTextReaderError.permissionRequired.localizedDescription)
+            summaryPipeline.releaseReservedCapture()
+            overlayController.showMessage(SelectedTextReaderError.permissionRequired.localizedDescription)
         case .failure(let error):
             NSLog("Miku Explains capture failed: %@", error.localizedDescription)
             summaryPipeline.releaseReservedCapture()
@@ -538,6 +563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isHostedGemini = GeminiAPIModelRegistry.isHostedGeminiAPIModel(selected)
         let geminiKeyConfigured = geminiKeychain.panelKeyConfigured(isGemmaSelected: isHostedGemini)
         let warning = geminiKeychain.isHeadsUpVisible
+        let geminiDebugSnapshot = geminiKeychain.debugSnapshot(probeKeychain: false)
 
         LlamaCppManager.shared.listInstalledModels { [weak self] models in
             guard let self else {
@@ -546,7 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let configuredLabel = geminiKeyConfigured.map { $0 ? "true" : "false" } ?? "nil"
             self.overlayController.appendDebugLine(
-                "Gemini panel sync: selected=\(selected) geminiAPIKeyConfigured=\(configuredLabel) geminiKeyWarning=\(warning) \(self.geminiKeychain.debugSnapshot())"
+                "Gemini panel sync: selected=\(selected) geminiAPIKeyConfigured=\(configuredLabel) geminiKeyWarning=\(warning) \(geminiDebugSnapshot)"
             )
             self.overlayController.sendModels(
                 models,
